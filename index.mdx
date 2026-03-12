@@ -1,0 +1,163 @@
+---
+title: "Embedded Programming: RPi Pico"
+description: "Program the Raspberry Pi Pico and RP2040 from PIO state machines to USB device classes. Eight lessons covering the Pico C SDK, programmable I/O, multicore programming, DMA pipelines, USB HID, MicroPython, and wireless networking with Pico W."
+pubDate: 2026-04-04
+tags: ["embedded-systems", "raspberry-pi-pico", "rp2040", "pio", "multicore", "dma", "usb", "micropython", "pico-w", "c-programming"]
+excerpt: "Master the RP2040's unique features: PIO state machines, dual-core programming, DMA pipelines, and USB device classes. Eight lessons building real projects from a USB text injector to a Wi-Fi controlled LED display. Covers both C SDK and MicroPython."
+heroImage: "https://cdn.siliconwit.com/education/pcb-design-kicad/pcb-design-kicad.png"
+---
+
+import Copyright from '../../../../components/Copyright.astro';
+import TawkWidget from '../../../../components/TawkWidget.astro';
+import { Card, CardGrid, Badge, Steps } from '@astrojs/starlight/components';
+
+The RP2040 is unlike any other microcontroller. Programmable I/O state machines let you implement custom hardware protocols in software. Two Cortex-M0+ cores give you real parallel processing. And it costs $4. This course focuses on what makes the Pico unique, not just another GPIO tutorial. Each lesson builds something that showcases these capabilities. #RaspberryPiPico #RP2040 #EmbeddedSystems
+
+## Why the RP2040?
+
+<CardGrid>
+  <Card title="PIO: Custom Hardware in Software" icon="star">
+    Programmable I/O state machines can implement WS2812B, VGA, UART, SPI, I2S, or any custom protocol without using CPU cycles. No other microcontroller in this price range offers anything like it. Lesson 3 teaches PIO assembly from scratch.
+  </Card>
+
+  <Card title="True Dual-Core" icon="approve-check">
+    Two independent Cortex-M0+ cores with hardware FIFOs and spinlocks for synchronization. Run audio generation on one core and UI on the other. Lesson 4 covers multicore patterns in depth.
+  </Card>
+
+  <Card title="DMA That Chains" icon="setting">
+    DMA channels with chaining, pacing timers, and ring buffer modes. Build pipelines where ADC feeds DMA feeds PIO with zero CPU involvement. Lesson 5 shows how.
+  </Card>
+
+  <Card title="C SDK and MicroPython" icon="rocket">
+    The Pico C SDK is clean, well-documented, and CMake-based. MicroPython runs natively with hardware access. Lesson 7 compares both approaches on the same hardware, so you know when to use each.
+  </Card>
+</CardGrid>
+
+## Course Structure
+
+Each lesson follows a consistent cycle:
+
+<Steps>
+1. **The Unique Problem**
+   A project that specifically leverages RP2040 capabilities. Not generic embedded tasks, but things this chip does better than others.
+
+2. **RP2040 Architecture**
+   How the relevant subsystem works: PIO instruction set, core interconnect, DMA channel architecture, USB PHY.
+
+3. **Implementation**
+   Write firmware using the Pico C SDK (or MicroPython in Lesson 7). CMake build system, UF2 flashing.
+
+4. **Build and Demonstrate**
+   Wire it up, flash via USB drag-and-drop or picotool, and verify the project works.
+
+5. **Performance Analysis**
+   Measure timing, CPU usage, or throughput. Understand where the RP2040 excels and where it has limitations.
+</Steps>
+
+## Lessons
+
+<CardGrid>
+  <Card title="Lesson 1: Pico SDK and RP2040 Architecture" icon="star">
+    [Pico SDK and RP2040 Architecture](./pico-sdk-rp2040-architecture). Install the Pico SDK, understand CMake build flow, dual Cortex-M0+ cores, bus fabric, and UF2 boot process. Build a USB text injector that types a predefined message when plugged in.
+    **Build:** USB text injector. **Parts:** Raspberry Pi Pico, micro USB cable.
+  </Card>
+
+  <Card title="Lesson 2: GPIO, PWM, and Analog I/O" icon="document">
+    [GPIO, PWM, and Analog I/O](./gpio-pwm-analog-io). Explore GPIO functions, PWM slice architecture, the 12-bit ADC, on-chip temperature sensor, and hardware interpolators. Build an LED brightness controller with analog knob and serial feedback.
+    **Build:** LED brightness controller. **Parts:** LEDs, potentiometer, resistors.
+  </Card>
+
+  <Card title="Lesson 3: PIO: Programmable I/O State Machines" icon="document">
+    [PIO: Programmable I/O State Machines](./pio-programmable-io-state-machines). Learn PIO assembly from scratch: instruction set, state machine architecture, FIFOs, clock dividers, and sideset. Write a WS2812B LED driver entirely in PIO.
+    **Build:** WS2812B LED strip driver. **Parts:** WS2812B LED strip (8 pixels).
+  </Card>
+
+  <Card title="Lesson 4: Multicore Programming" icon="document">
+    [Multicore Programming: Dual Core](./multicore-programming-dual-core). Launch code on Core 1, communicate through hardware FIFOs, use spinlocks and shared memory safely. Build a dual-core synthesizer where one core generates waveforms and the other handles button input.
+    **Build:** Dual-core tone synthesizer. **Parts:** Piezo or small speaker, buttons.
+  </Card>
+
+  <Card title="Lesson 5: DMA and High-Speed Data Pipelines" icon="document">
+    [DMA and High-Speed Data Pipelines](./dma-high-speed-data-pipelines). Configure DMA channels with chaining, pacing timers, and ring buffer modes. Build an audio sampler that captures microphone input via ADC+DMA and stores it to SPI flash.
+    **Build:** Audio sampler. **Parts:** Electret microphone module, W25Q SPI flash module.
+  </Card>
+
+  <Card title="Lesson 6: USB Device Classes" icon="document">
+    [USB Device Classes](./usb-device-classes). Use TinyUSB to implement HID, CDC, and MSC USB device classes. Build a custom USB gamepad with a joystick and buttons that appears as a standard HID controller on any PC.
+    **Build:** Custom USB gamepad. **Parts:** Thumb joystick module, 4 push buttons.
+  </Card>
+
+  <Card title="Lesson 7: MicroPython on RP2040" icon="document">
+    [MicroPython on RP2040](./micropython-rp2040-rapid-prototyping). Flash MicroPython, use the REPL, access hardware through the machine module, write PIO programs in Python. Rebuild a previous project in MicroPython and compare development speed vs performance.
+    **Build:** Rapid sensor dashboard (same hardware, fraction of the code). **Parts:** Reuse existing.
+  </Card>
+
+  <Card title="Lesson 8: Wireless with Pico W" icon="document">
+    [Wireless Networking with Pico W](./wireless-networking-pico-w). Use the CYW43 wireless driver for Wi-Fi and BLE connectivity. Set up network sockets, run a microdot web server, and serve a control interface. Build a Wi-Fi controlled NeoPixel display.
+    **Build:** Wi-Fi controlled NeoPixel display. **Parts:** Pico W (swap from Pico), reuse WS2812B.
+  </Card>
+</CardGrid>
+
+## Parts Kit
+
+| Part | Quantity | First Used | Approximate Cost |
+|------|----------|------------|-----------------|
+| Raspberry Pi Pico | 1 | Lesson 1 | $4 |
+| Raspberry Pi Pico W | 1 | Lesson 8 | $6 |
+| Micro USB cable | 1 | Lesson 1 | $1 |
+| Breadboard + jumper wires | 1 set | Lesson 1 | $3-5 |
+| LEDs + 220R resistors | 4 | Lesson 2 | $0.50 |
+| Potentiometer (10K) | 1 | Lesson 2 | $0.25 |
+| WS2812B LED strip (8 pixels) | 1 | Lesson 3 | $2-3 |
+| Piezo buzzer or small speaker | 1 | Lesson 4 | $0.50 |
+| Push buttons | 4 | Lesson 4 | $0.50 |
+| Electret microphone module | 1 | Lesson 5 | $1 |
+| W25Q SPI flash module | 1 | Lesson 5 | $1-2 |
+| Thumb joystick module | 1 | Lesson 6 | $1-2 |
+
+**Total estimated cost: $22-30** (including both Pico and Pico W)
+
+## Skill Progression
+
+| Skill | Lessons 1-2 | Lessons 3-4 | Lessons 5-6 | Lessons 7-8 |
+|-------|------------|------------|------------|------------|
+| **Architecture** | Boot, GPIO, PWM, ADC | PIO assembly, multicore | DMA channels, USB PHY | MicroPython VM, CYW43 |
+| **Unique Features** | UF2 flashing, interpolators | PIO state machines, FIFOs | DMA chaining, ring buffers | PIO in Python, Wi-Fi |
+| **Projects** | Text injector, LED control | LED strip driver, synth | Audio sampler, USB gamepad | Sensor dashboard, Wi-Fi display |
+| **Language** | C (Pico SDK) | C (Pico SDK) | C (TinyUSB) | MicroPython, then C |
+
+## Prerequisites
+
+<Badge text="Embedded C experience required" variant="caution" />
+
+**You should be comfortable with:**
+- C programming (pointers, structs, bit manipulation, basic CMake)
+- Microcontroller basics (GPIO, timers, interrupts, SPI/I2C)
+- Our [Embedded Programming: ATmega328P](/education/embedded-programming-atmega328p/) course or equivalent
+
+**Helpful but not required:**
+- Python basics (for MicroPython lesson)
+- Our [Embedded Programming: STM32](/education/embedded-programming-stm32/) course (ARM Cortex-M context)
+- Our [PCB Design with KiCad](/education/pcb-design-kicad/) lesson 7 (design your own RP2040 board)
+
+## Getting Started
+
+<Steps>
+1. **Get a Raspberry Pi Pico** ($4) and a **Pico W** ($6) for the wireless lesson. Both use micro USB.
+
+2. **Install the Pico SDK** and CMake. Lesson 1 covers setup on Linux, macOS, and Windows.
+
+3. **No debugger needed to start.** The Pico uses UF2 drag-and-drop flashing over USB. Hold BOOTSEL, plug in, drop the .uf2 file.
+
+4. **Start with Lesson 1.** The USB text injector demonstrates the boot process and build system in a fun, immediately useful way.
+
+5. **Lessons 1 through 6 use the standard Pico.** Swap to Pico W for Lesson 8 (wireless).
+</Steps>
+
+:::tip[One debugger, two Picos]
+A second Pico can serve as a debugger (picoprobe) for SWD debugging of the first. This is optional but useful for lessons 4 and 5 where timing-sensitive code is hard to debug with printf alone.
+:::
+
+<Copyright />
+
+<TawkWidget />
