@@ -1,0 +1,1073 @@
+---
+title: "Wireless Networking with Pico W"
+description: "Use the CYW43 wireless driver for Wi-Fi and BLE connectivity. Set up network sockets, run a microdot web server, and build a Wi-Fi controlled NeoPixel display with a phone-friendly web UI."
+contributors: "sam-macharia,lawrence-langat"
+pubDate: 2026-03-12
+tags: ["pico-w", "wifi", "ble", "wireless", "web-server", "ws2812b", "neopixel"]
+excerpt: "Use the CYW43 wireless driver for Wi-Fi and BLE connectivity. Set up network sockets, run a microdot web server, and build a Wi-Fi controlled NeoPixel display with a phone-friendly web UI."
+heroImage: "https://cdn.siliconwit.com/education/embedded-programming-rpi-pico/RaspberryPi-Pico-Pinout.png"
+---
+
+import TawkWidget from '../../../../components/TawkWidget.astro';
+import UniversalContentContributors from '../../../../components/UniversalContentContributors.astro';
+import InArticleAd from '../../../../components/InArticleAd.astro';
+import Copyright from '../../../../components/Copyright.astro';
+import BionicText from '../../../../components/BionicText.astro';
+import TailwindWrapper from '../../../../components/TailwindWrapper.jsx';
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/starlight/components';
+
+<UniversalContentContributors 
+  contributors={frontmatter.contributors}
+/>
+
+
+
+import EmbeddedProgrammingRpiPicoComments from '../../../../components/embedded-programming-rpi-pico/EmbeddedProgrammingRpiPicoComments.astro';
+
+Swap your Pico for a Pico W and the RP2040 gains Wi-Fi and Bluetooth. Open your phone browser, navigate to the Pico's IP address, pick a color on the web UI, and the WS2812B strip from Lesson 3 changes instantly. This final lesson brings together everything from the course: PIO drives the LED protocol, the CYW43 wireless chip handles networking, and a lightweight web server running on MicroPython serves the control interface. You will configure Wi-Fi station mode, set up TCP sockets, handle HTTP requests, and push real-time color updates to the NeoPixel strip. #PicoW #WiFi #WirelessEmbedded
+
+## What We Are Building
+
+<Card title="Wi-Fi Controlled NeoPixel Display" icon="star">
+A Pico W running MicroPython connects to your Wi-Fi network and serves a web page with a color picker and pattern selector. When you choose a color or animation pattern on your phone or laptop, the Pico receives the command over HTTP and updates the WS2812B LED strip in real time using PIO. The web UI is self-contained HTML/CSS/JS served directly from the Pico's filesystem.
+</Card>
+
+**Project specifications:**
+
+| Parameter | Value |
+|-----------|-------|
+| Board | Raspberry Pi Pico W (CYW43439) |
+| Wireless | Wi-Fi 802.11n (2.4 GHz), BLE 5.2 |
+| Web Server | Raw socket HTTP server with asyncio |
+| LED Control | WS2812B via PIO (reuse Lesson 3 driver) |
+| Web UI | Color picker, pattern selector, brightness slider |
+| Network Mode | Station mode (connects to existing Wi-Fi) |
+| Runtime | MicroPython with `network` and `socket` modules |
+
+### Bill of Materials
+
+| Ref | Component | Quantity | Notes |
+|-----|-----------|----------|-------|
+| 1 | Raspberry Pi Pico W | 1 | Replaces standard Pico for this lesson |
+| 2 | WS2812B LED strip (8 pixels) | 1 | Reuse from Lesson 3 |
+| 3 | 330 ohm resistor | 1 | Data line series resistor |
+| 4 | Micro USB cable | 1 | For power and initial flashing |
+| 5 | Breadboard + jumper wires | 1 set | |
+
+## Pico W Hardware
+
+<InArticleAd />
+
+
+The Pico W adds an Infineon CYW43439 wireless chip to the standard Pico board. This chip supports 802.11n Wi-Fi on the 2.4 GHz band and Bluetooth 5.2 (including BLE). The CYW43439 connects to the RP2040 over SPI, not through the general-purpose GPIO pins. This means the wireless chip does not consume any of the GPIO pins you use for your own peripherals.
+
+One important difference from the standard Pico: the onboard LED is no longer connected to GP25. On the Pico W, the LED is routed through the CYW43 wireless chip. You must use the CYW43 driver to control it. In MicroPython, the pin name `"LED"` maps to the correct CYW43 GPIO internally.
+
+### Blinking the Onboard LED
+
+On a standard Pico, you would use `machine.Pin(25, machine.Pin.OUT)` to control the LED. On the Pico W, use this instead:
+
+```python title="blink_pico_w.py"
+import machine
+import time
+
+led = machine.Pin("LED", machine.Pin.OUT)
+
+while True:
+    led.toggle()
+    time.sleep(0.5)
+```
+
+The string `"LED"` tells MicroPython to route the pin control through the CYW43 driver. If you try `Pin(25)` on a Pico W, nothing happens because GP25 is not connected to the LED on this board.
+
+## Wi-Fi Connection
+
+<InArticleAd />
+
+
+The `network` module in MicroPython provides the `WLAN` class for managing Wi-Fi connections. The Pico W operates in station mode (STA_IF) to connect to an existing Wi-Fi access point, or in access point mode (AP_IF) to create its own network. For this project we use station mode so the Pico joins your home or lab Wi-Fi.
+
+### Station Mode Setup
+
+The connection sequence follows four steps: activate the interface, issue the connect command, wait for the connection to complete, and retrieve the assigned IP address.
+
+```python title="connect_example.py"
+import network
+import time
+
+wlan = network.WLAN(network.STA_IF)
+wlan.active(True)
+
+wlan.connect("YourSSID", "YourPassword")
+
+# Wait for connection with a timeout
+max_wait = 10
+while max_wait > 0:
+    status = wlan.status()
+    if status < 0 or status >= 3:
+        break
+    max_wait -= 1
+    print("Waiting for connection...")
+    time.sleep(1)
+
+if wlan.status() != 3:
+    raise RuntimeError("Wi-Fi connection failed, status: " + str(wlan.status()))
+
+config = wlan.ifconfig()
+print("Connected. IP address:", config[0])
+```
+
+The `wlan.status()` method returns an integer code. Status 3 means `CYW43_LINK_JOIN`, indicating a successful connection with an IP address assigned. Negative values indicate errors such as connection failure or wrong password.
+
+### Reusable Connection Function
+
+Wrapping the connection logic in a function makes it easy to reuse across projects:
+
+```python title="wifi_utils.py"
+import network
+import time
+
+def connect_wifi(ssid, password, timeout=10):
+    """Connect to Wi-Fi and return the WLAN interface."""
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+
+    # Set power management to aggressive for better responsiveness
+    wlan.config(pm=0xa11140)
+
+    wlan.connect(ssid, password)
+
+    for i in range(timeout):
+        if wlan.status() == 3:
+            ip = wlan.ifconfig()[0]
+            print("Connected to", ssid, "at", ip)
+            return wlan
+        print("Connecting... attempt", i + 1)
+        time.sleep(1)
+
+    wlan.active(False)
+    raise RuntimeError("Could not connect to " + ssid)
+```
+
+The `wlan.config(pm=0xa11140)` call configures power management. The default power saving mode can add latency to incoming connections. Setting this value puts the wireless chip in a more responsive mode, which matters when you are running a web server that needs to reply quickly to HTTP requests.
+
+## Socket Programming Basics
+
+<InArticleAd />
+
+
+With Wi-Fi connected and an IP address assigned, the Pico W can send and receive data over TCP. MicroPython includes `usocket` (aliased as `socket`) for BSD-style socket programming. A web server listens for incoming TCP connections on port 80, reads the HTTP request, and sends back an HTTP response.
+
+### Minimal Web Server
+
+This example serves a static "Hello from Pico W" page to any browser that connects:
+
+```python title="hello_server.py"
+import socket
+import network
+import time
+
+# Connect to Wi-Fi first
+wlan = network.WLAN(network.STA_IF)
+wlan.active(True)
+wlan.connect("YourSSID", "YourPassword")
+
+while wlan.status() != 3:
+    time.sleep(1)
+
+ip = wlan.ifconfig()[0]
+print("Listening on", ip)
+
+# Create TCP server socket
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("0.0.0.0", 80))
+server.listen(5)
+
+html = """<!DOCTYPE html>
+<html>
+<head><title>Pico W</title></head>
+<body><h1>Hello from Pico W!</h1><p>IP: {}</p></body>
+</html>""".format(ip)
+
+while True:
+    client, addr = server.accept()
+    print("Connection from", addr)
+
+    request = client.recv(1024).decode("utf-8")
+
+    # Parse the request line
+    request_line = request.split("\r\n")[0]
+    method, path, _ = request_line.split(" ", 2)
+    print(method, path)
+
+    # Send HTTP response
+    response = "HTTP/1.1 200 OK\r\n"
+    response += "Content-Type: text/html\r\n"
+    response += "Connection: close\r\n"
+    response += "\r\n"
+    response += html
+
+    client.send(response.encode("utf-8"))
+    client.close()
+```
+
+The server creates a TCP socket, binds it to all interfaces on port 80, and listens for connections. When a browser connects, the server reads the HTTP request, ignores most of it, and sends back a simple HTML page. The `Connection: close` header tells the browser to close the connection after receiving the response, keeping the server logic simple.
+
+### Parsing HTTP Requests
+
+For the NeoPixel controller we need to handle different endpoints and parse JSON data from POST requests. Here is the pattern for extracting the method, path, and body:
+
+```python
+def parse_request(data):
+    """Parse an HTTP request into method, path, headers, and body."""
+    text = data.decode("utf-8")
+    header_section, _, body = text.partition("\r\n\r\n")
+    lines = header_section.split("\r\n")
+    request_line = lines[0]
+    parts = request_line.split(" ", 2)
+    method = parts[0]
+    path = parts[1] if len(parts) > 1 else "/"
+    return method, path, body
+```
+
+## The NeoPixel Web Controller
+
+<InArticleAd />
+
+
+The complete project consists of five files that work together: Wi-Fi configuration, the NeoPixel PIO driver, the HTTP server, the web UI, and the main entry point. Each file has a single responsibility, making the project easy to modify and debug.
+
+### Project Structure
+
+<FileTree>
+- /
+  - wifi_config.py
+  - neopixel_pio.py
+  - web_server.py
+  - index.html
+  - main.py
+</FileTree>
+
+These files live on the Pico W's internal filesystem. MicroPython executes `main.py` automatically on boot.
+
+### wifi_config.py
+
+Store your network credentials in a separate file so you can keep the rest of the code in version control without exposing your password. Never commit this file to a public repository.
+
+```python title="wifi_config.py"
+SSID = "YourNetworkName"
+PASSWORD = "YourNetworkPassword"
+```
+
+### neopixel_pio.py
+
+This module wraps the WS2812B PIO driver in a Python class. The PIO program is the same protocol from Lesson 3, expressed using MicroPython's `@rp2.asm_pio` decorator instead of a `.pio` file.
+
+```python title="neopixel_pio.py"
+import rp2
+import array
+import time
+from machine import Pin
+
+@rp2.asm_pio(
+    sideset_init=rp2.PIO.OUT_LOW,
+    out_shiftdir=rp2.PIO.SHIFT_LEFT,
+    autopull=True,
+    pull_thresh=24
+)
+def ws2812():
+    T1 = 2
+    T2 = 5
+    T3 = 3
+    wrap_target()
+    label("bitloop")
+    out(x, 1)               .side(0) [T3 - 1]
+    jmp(not_x, "do_zero")   .side(1) [T1 - 1]
+    jmp("bitloop")           .side(1) [T2 - 1]
+    label("do_zero")
+    nop()                    .side(0) [T2 - 1]
+    wrap()
+
+class NeoPixel:
+    def __init__(self, pin_num, num_pixels, brightness=0.3):
+        self.num_pixels = num_pixels
+        self.brightness = brightness
+        self.pixels = array.array("I", [0] * num_pixels)
+        self.sm = rp2.StateMachine(
+            0,
+            ws2812,
+            freq=8_000_000,
+            sideset_base=Pin(pin_num)
+        )
+        self.sm.active(1)
+
+    def set_pixel(self, index, r, g, b):
+        """Set a single pixel to the given RGB color."""
+        if 0 <= index < self.num_pixels:
+            r = int(r * self.brightness)
+            g = int(g * self.brightness)
+            b = int(b * self.brightness)
+            self.pixels[index] = (g << 16) | (r << 8) | b
+
+    def fill(self, r, g, b):
+        """Set all pixels to the same RGB color."""
+        r = int(r * self.brightness)
+        g = int(g * self.brightness)
+        b = int(b * self.brightness)
+        color = (g << 16) | (r << 8) | b
+        for i in range(self.num_pixels):
+            self.pixels[i] = color
+
+    def clear(self):
+        """Turn off all pixels."""
+        self.fill(0, 0, 0)
+        self.show()
+
+    def show(self):
+        """Push the pixel buffer to the LED strip."""
+        for i in range(self.num_pixels):
+            self.sm.put(self.pixels[i], 8)
+        time.sleep_us(60)  # Reset signal: hold low for > 50 us
+
+    def set_brightness(self, value):
+        """Set brightness as a float from 0.0 to 1.0."""
+        self.brightness = max(0.0, min(1.0, value))
+
+    @staticmethod
+    def wheel(pos):
+        """Color wheel: input 0-255, returns (r, g, b) tuple.
+
+        Colors transition through red, green, blue and back to red.
+        """
+        pos = pos & 0xFF
+        if pos < 85:
+            return (255 - pos * 3, pos * 3, 0)
+        elif pos < 170:
+            pos -= 85
+            return (0, 255 - pos * 3, pos * 3)
+        else:
+            pos -= 170
+            return (pos * 3, 0, 255 - pos * 3)
+```
+
+The PIO program runs at 8 MHz, which gives 10 cycles per bit (T1 + T2 + T3 = 2 + 5 + 3). At 8 MHz each cycle is 125 ns, so the total bit period is 1.25 us, matching the 800 kHz WS2812B specification. This is the same timing analysis from Lesson 3, now running through MicroPython's `rp2.StateMachine` interface.
+
+The `show()` method calls `sm.put(pixel, 8)` for each pixel. The second argument (8) tells the state machine to shift the data left by 8 bits before writing it to the FIFO, matching the 24-bit autopull threshold. After all pixels are written, a 60 us delay generates the reset signal.
+
+### web_server.py
+
+The HTTP server handles four endpoints: GET `/` serves the web page, POST `/color` sets a solid color, POST `/pattern` selects an animation, and POST `/brightness` adjusts the brightness level.
+
+```python title="web_server.py"
+import usocket as socket
+import ujson as json
+
+class WebServer:
+    def __init__(self, state):
+        self.state = state
+        self.server = None
+        self._html_cache = None
+
+    def _load_html(self):
+        """Load and cache the HTML file from the filesystem."""
+        if self._html_cache is None:
+            with open("index.html", "r") as f:
+                self._html_cache = f.read()
+        return self._html_cache
+
+    def _parse_request(self, data):
+        """Extract method, path, and body from raw HTTP data."""
+        text = data.decode("utf-8")
+        header_section, _, body = text.partition("\r\n\r\n")
+        lines = header_section.split("\r\n")
+        request_line = lines[0]
+        parts = request_line.split(" ", 2)
+        method = parts[0] if len(parts) > 0 else "GET"
+        path = parts[1] if len(parts) > 1 else "/"
+        return method, path, body
+
+    def _send_response(self, client, status, content_type, body):
+        """Send an HTTP response and close the connection."""
+        header = "HTTP/1.1 {}\r\n".format(status)
+        header += "Content-Type: {}\r\n".format(content_type)
+        header += "Content-Length: {}\r\n".format(len(body))
+        header += "Connection: close\r\n"
+        header += "Access-Control-Allow-Origin: *\r\n"
+        header += "\r\n"
+        client.send(header.encode("utf-8"))
+        client.send(body.encode("utf-8") if isinstance(body, str) else body)
+
+    def _send_json(self, client, data):
+        """Send a JSON response."""
+        body = json.dumps(data)
+        self._send_response(client, "200 OK", "application/json", body)
+
+    def _handle_request(self, client):
+        """Process one HTTP request."""
+        try:
+            data = client.recv(2048)
+            if not data:
+                client.close()
+                return
+
+            method, path, body = self._parse_request(data)
+            print("{} {}".format(method, path))
+
+            if method == "GET" and path == "/":
+                html = self._load_html()
+                self._send_response(client, "200 OK", "text/html", html)
+
+            elif method == "POST" and path == "/color":
+                params = json.loads(body)
+                self.state["pattern"] = "solid"
+                self.state["color"] = (
+                    params.get("r", 0),
+                    params.get("g", 0),
+                    params.get("b", 0)
+                )
+                self._send_json(client, {"status": "ok", "color": self.state["color"]})
+
+            elif method == "POST" and path == "/pattern":
+                params = json.loads(body)
+                name = params.get("name", "solid")
+                if name in ("solid", "rainbow", "chase", "breathe"):
+                    self.state["pattern"] = name
+                    self._send_json(client, {"status": "ok", "pattern": name})
+                else:
+                    self._send_response(
+                        client, "400 Bad Request",
+                        "application/json",
+                        '{"error": "unknown pattern"}'
+                    )
+
+            elif method == "POST" and path == "/brightness":
+                params = json.loads(body)
+                value = max(0, min(100, params.get("value", 30)))
+                self.state["brightness"] = value / 100.0
+                self._send_json(client, {"status": "ok", "brightness": value})
+
+            elif method == "OPTIONS":
+                # Handle CORS preflight
+                self._send_response(client, "204 No Content", "text/plain", "")
+
+            else:
+                self._send_response(
+                    client, "404 Not Found",
+                    "text/plain",
+                    "Not Found"
+                )
+
+        except Exception as e:
+            print("Request error:", e)
+            try:
+                self._send_response(
+                    client, "500 Internal Server Error",
+                    "text/plain",
+                    "Server Error"
+                )
+            except:
+                pass
+        finally:
+            client.close()
+
+    async def start(self, host="0.0.0.0", port=80):
+        """Start the async HTTP server."""
+        import uasyncio as asyncio
+
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server.bind((host, port))
+        self.server.listen(5)
+        self.server.setblocking(False)
+
+        print("Web server listening on port", port)
+
+        while True:
+            try:
+                client, addr = self.server.accept()
+                self._handle_request(client)
+            except OSError:
+                pass
+            await asyncio.sleep_ms(10)
+```
+
+The server uses a shared `state` dictionary that both the web server and the animation loop can read and write. When a POST request changes the color or pattern, the server updates the state dictionary. The animation coroutine reads from the same dictionary on every frame. This avoids the need for locks or queues; the cooperative scheduling of `uasyncio` ensures only one coroutine runs at a time.
+
+The socket is set to non-blocking mode with `setblocking(False)`. The `accept()` call raises `OSError` when no client is waiting, which the `except` block catches silently. The coroutine then yields control with `await asyncio.sleep_ms(10)`, giving the animation loop a chance to run.
+
+### index.html
+
+The web UI is a single self-contained HTML file with inline CSS and JavaScript. It provides a color picker, pattern selection buttons, and a brightness slider. The layout is responsive and works well on phone screens.
+
+```html title="index.html"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pico W NeoPixel Controller</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            max-width: 400px;
+            width: 100%;
+        }
+        h1 {
+            text-align: center;
+            font-size: 1.4em;
+            margin-bottom: 24px;
+            color: #ffffff;
+        }
+        .section {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+        .section-title {
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #888;
+            margin-bottom: 12px;
+        }
+        .color-picker-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        input[type="color"] {
+            width: 60px;
+            height: 60px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            background: transparent;
+        }
+        input[type="color"]::-webkit-color-swatch-wrapper {
+            padding: 0;
+        }
+        input[type="color"]::-webkit-color-swatch {
+            border: 2px solid #333;
+            border-radius: 8px;
+        }
+        .color-value {
+            font-family: monospace;
+            font-size: 1.1em;
+            color: #aaa;
+        }
+        .pattern-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .pattern-btn {
+            padding: 12px;
+            border: 2px solid #333;
+            border-radius: 8px;
+            background: #0f3460;
+            color: #e0e0e0;
+            font-size: 0.95em;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .pattern-btn:active {
+            transform: scale(0.96);
+        }
+        .pattern-btn.active {
+            border-color: #e94560;
+            background: #1a1a4e;
+        }
+        .slider-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        input[type="range"] {
+            flex: 1;
+            height: 6px;
+            appearance: none;
+            background: #333;
+            border-radius: 3px;
+            outline: none;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            appearance: none;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: #e94560;
+            cursor: pointer;
+        }
+        .slider-value {
+            font-family: monospace;
+            font-size: 1.1em;
+            min-width: 40px;
+            text-align: right;
+            color: #aaa;
+        }
+        .status {
+            text-align: center;
+            font-size: 0.8em;
+            color: #555;
+            margin-top: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>NeoPixel Controller</h1>
+
+        <div class="section">
+            <div class="section-title">Color</div>
+            <div class="color-picker-wrapper">
+                <input type="color" id="colorPicker" value="#ff0040">
+                <span class="color-value" id="colorHex">#ff0040</span>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Pattern</div>
+            <div class="pattern-grid">
+                <button class="pattern-btn active" data-pattern="solid">Solid</button>
+                <button class="pattern-btn" data-pattern="rainbow">Rainbow</button>
+                <button class="pattern-btn" data-pattern="chase">Chase</button>
+                <button class="pattern-btn" data-pattern="breathe">Breathe</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Brightness</div>
+            <div class="slider-wrapper">
+                <input type="range" id="brightness" min="0" max="100" value="30">
+                <span class="slider-value" id="brightnessValue">30%</span>
+            </div>
+        </div>
+
+        <div class="status" id="status">Ready</div>
+    </div>
+
+    <script>
+        const colorPicker = document.getElementById("colorPicker");
+        const colorHex = document.getElementById("colorHex");
+        const brightness = document.getElementById("brightness");
+        const brightnessValue = document.getElementById("brightnessValue");
+        const statusEl = document.getElementById("status");
+        const patternBtns = document.querySelectorAll(".pattern-btn");
+
+        function setStatus(msg) {
+            statusEl.textContent = msg;
+            setTimeout(() => { statusEl.textContent = "Ready"; }, 2000);
+        }
+
+        function hexToRgb(hex) {
+            const r = parseInt(hex.slice(1, 3), 16);
+            const g = parseInt(hex.slice(3, 5), 16);
+            const b = parseInt(hex.slice(5, 7), 16);
+            return { r, g, b };
+        }
+
+        async function sendColor() {
+            const rgb = hexToRgb(colorPicker.value);
+            try {
+                await fetch("/color", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(rgb)
+                });
+                setStatus("Color updated");
+            } catch (e) {
+                setStatus("Error: " + e.message);
+            }
+        }
+
+        async function sendPattern(name) {
+            try {
+                await fetch("/pattern", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name: name })
+                });
+                setStatus("Pattern: " + name);
+            } catch (e) {
+                setStatus("Error: " + e.message);
+            }
+        }
+
+        async function sendBrightness(value) {
+            try {
+                await fetch("/brightness", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ value: parseInt(value) })
+                });
+                setStatus("Brightness: " + value + "%");
+            } catch (e) {
+                setStatus("Error: " + e.message);
+            }
+        }
+
+        colorPicker.addEventListener("input", () => {
+            colorHex.textContent = colorPicker.value;
+        });
+        colorPicker.addEventListener("change", sendColor);
+
+        patternBtns.forEach(btn => {
+            btn.addEventListener("click", () => {
+                patternBtns.forEach(b => b.classList.remove("active"));
+                btn.classList.add("active");
+                sendPattern(btn.dataset.pattern);
+
+                if (btn.dataset.pattern === "solid") {
+                    sendColor();
+                }
+            });
+        });
+
+        brightness.addEventListener("input", () => {
+            brightnessValue.textContent = brightness.value + "%";
+        });
+        brightness.addEventListener("change", () => {
+            sendBrightness(brightness.value);
+        });
+    </script>
+</body>
+</html>
+```
+
+The JavaScript uses `fetch()` to send POST requests with JSON bodies to the Pico's endpoints. The color picker fires `sendColor()` on the `change` event (when the user releases the picker), not on every `input` event, to avoid flooding the Pico with requests. The pattern buttons use `click` handlers that also update the active button styling.
+
+### main.py
+
+The entry point connects to Wi-Fi, creates the shared state, and launches two `uasyncio` coroutines: one for the LED animation loop and one for the web server.
+
+```python title="main.py"
+import uasyncio as asyncio
+import network
+import time
+from machine import Pin
+from wifi_config import SSID, PASSWORD
+from neopixel_pio import NeoPixel
+from web_server import WebServer
+
+NUM_PIXELS = 8
+LED_PIN = 2
+
+# Shared state between web server and animation loop
+state = {
+    "pattern": "rainbow",
+    "color": (255, 0, 64),
+    "brightness": 0.3
+}
+
+def connect_wifi():
+    """Connect to Wi-Fi and return the IP address."""
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    wlan.config(pm=0xa11140)
+    wlan.connect(SSID, PASSWORD)
+
+    for i in range(15):
+        if wlan.status() == 3:
+            ip = wlan.ifconfig()[0]
+            print("Connected to", SSID)
+            print("IP address:", ip)
+            return ip
+        print("Connecting... attempt", i + 1)
+        time.sleep(1)
+
+    raise RuntimeError("Wi-Fi connection failed")
+
+async def animation_loop(np):
+    """Continuously update the LED strip based on the current state."""
+    frame = 0
+
+    while True:
+        np.set_brightness(state["brightness"])
+        pattern = state["pattern"]
+
+        if pattern == "solid":
+            r, g, b = state["color"]
+            np.fill(r, g, b)
+            np.show()
+            await asyncio.sleep_ms(50)
+
+        elif pattern == "rainbow":
+            for i in range(np.num_pixels):
+                hue = (frame * 3 + i * 32) & 0xFF
+                r, g, b = NeoPixel.wheel(hue)
+                np.set_pixel(i, r, g, b)
+            np.show()
+            await asyncio.sleep_ms(30)
+
+        elif pattern == "chase":
+            r, g, b = state["color"]
+            for i in range(np.num_pixels):
+                if (i + frame) % 3 == 0:
+                    np.set_pixel(i, r, g, b)
+                else:
+                    np.set_pixel(i, 0, 0, 0)
+            np.show()
+            await asyncio.sleep_ms(100)
+
+        elif pattern == "breathe":
+            phase = frame & 0xFF
+            if phase < 128:
+                scale = phase / 128.0
+            else:
+                scale = (255 - phase) / 128.0
+            r, g, b = state["color"]
+            np.fill(int(r * scale), int(g * scale), int(b * scale))
+            np.show()
+            await asyncio.sleep_ms(20)
+
+        frame = (frame + 1) & 0xFFFF
+
+async def main():
+    # Connect to Wi-Fi
+    ip = connect_wifi()
+
+    # Blink the onboard LED to indicate successful connection
+    led = Pin("LED", Pin.OUT)
+    for _ in range(3):
+        led.on()
+        await asyncio.sleep_ms(200)
+        led.off()
+        await asyncio.sleep_ms(200)
+    led.on()  # Leave LED on to show Wi-Fi is active
+
+    # Initialize the NeoPixel strip
+    np = NeoPixel(LED_PIN, NUM_PIXELS, brightness=state["brightness"])
+    np.clear()
+
+    # Start the web server and animation loop concurrently
+    server = WebServer(state)
+
+    print("Starting NeoPixel controller at http://{}".format(ip))
+
+    await asyncio.gather(
+        animation_loop(np),
+        server.start()
+    )
+
+# Run the async main function
+try:
+    asyncio.run(main())
+except KeyboardInterrupt:
+    print("Stopped by user")
+```
+
+On boot, the Pico W connects to Wi-Fi and blinks the onboard LED three times to confirm the connection. Then it starts both coroutines with `asyncio.gather()`. The animation loop runs continuously, reading the pattern and color from the shared `state` dictionary. The web server accepts incoming HTTP connections and updates the same dictionary when commands arrive. Because `uasyncio` is cooperative, only one coroutine executes at a time, and context switches happen at every `await` statement.
+
+## Uploading Files to the Pico W
+
+<InArticleAd />
+
+
+Before running the project you need to transfer all five files to the Pico W's internal filesystem. Two tools work well for this: Thonny (graphical) and mpremote (command line).
+
+<Tabs>
+<TabItem label="mpremote">
+
+The `mpremote` tool comes with the MicroPython project and works from the terminal. Install it with pip if you have not already:
+
+```bash
+pip install mpremote
+```
+
+Upload each file individually:
+
+```bash
+mpremote cp wifi_config.py :wifi_config.py
+mpremote cp neopixel_pio.py :neopixel_pio.py
+mpremote cp web_server.py :web_server.py
+mpremote cp index.html :index.html
+mpremote cp main.py :main.py
+```
+
+The colon prefix (`:`) means the Pico's filesystem. After uploading, reset the board:
+
+```bash
+mpremote reset
+```
+
+You can also upload all files in one command:
+
+```bash
+mpremote cp wifi_config.py neopixel_pio.py web_server.py index.html main.py :
+```
+</TabItem>
+<TabItem label="Thonny">
+
+<Steps>
+1. Open Thonny and select the Pico W as the interpreter (bottom-right corner, select "MicroPython (Raspberry Pi Pico)").
+
+2. Open each `.py` and `.html` file from your computer using File, then Open.
+
+3. For each file, use File, then Save As, then select "Raspberry Pi Pico" as the target. Save with the same filename.
+
+4. After all files are saved, click the Stop/Restart button to reset the Pico. It will run `main.py` automatically on boot.
+</Steps>
+</TabItem>
+</Tabs>
+
+After the Pico reboots, watch the serial output (Thonny's shell or `mpremote repl`) for the Wi-Fi connection status and the IP address. Open that IP address in a browser on your phone or laptop, and the NeoPixel controller interface appears.
+
+## How the Animation Loop Works
+
+<InArticleAd />
+
+
+The Pico W runs MicroPython's `uasyncio` library, which provides cooperative multitasking on a single-threaded event loop. Two coroutines share the CPU:
+
+1. `animation_loop()` updates the LED strip on every frame. Depending on the pattern, it sleeps for 20 to 100 ms between frames using `await asyncio.sleep_ms()`.
+
+2. `server.start()` polls for incoming HTTP connections. When no client is waiting, it catches the `OSError` from the non-blocking `accept()` call and yields with `await asyncio.sleep_ms(10)`.
+
+The key insight is that `await` is the only point where a context switch can happen. Neither coroutine can be interrupted in the middle of updating pixels or handling an HTTP request. This eliminates race conditions on the shared `state` dictionary without requiring locks or mutexes.
+
+The timing works out well in practice. The animation loop sleeps for at least 20 ms per frame, giving the server coroutine many opportunities to check for and handle incoming connections. HTTP requests typically complete in under 5 ms (the request and response are small), so the animation does not stutter visibly when a browser sends a command.
+
+If you add more complex server logic or longer running computations, you can insert additional `await asyncio.sleep_ms(0)` calls at strategic points to yield control more frequently without adding real delays.
+
+## Circuit Wiring
+
+<InArticleAd />
+
+
+Connect the WS2812B strip to the Pico W the same way as in Lesson 3:
+
+| WS2812B Pin | Pico W Connection |
+|-------------|-------------------|
+| DIN (data in) | GP2 through 330 ohm resistor |
+| VCC (5V) | VBUS (5V USB) or external 5V supply |
+| GND | GND (shared ground with Pico W) |
+
+The Pico W has the same pinout as the standard Pico for all GPIO pins. The only difference is the onboard LED routing and the addition of the CYW43439 module on the back of the board. All your existing wiring from earlier lessons works without changes.
+
+## Adding MQTT
+
+<InArticleAd />
+
+
+HTTP works well for direct browser control, but many IoT applications need a publish/subscribe messaging system. MQTT is the standard protocol for this. The Pico W can publish its LED state to a broker and subscribe to commands from other devices or dashboards.
+
+MicroPython includes the `umqtt.simple` library for basic MQTT communication. If it is not included in your firmware build, install it using `mpremote`:
+
+```bash
+mpremote mip install umqtt.simple
+```
+
+### Publish/Subscribe Example
+
+This example connects to an MQTT broker, publishes the current LED color whenever it changes, and subscribes to a topic for receiving color commands from other clients.
+
+```python title="mqtt_example.py"
+from umqtt.simple import MQTTClient
+import ujson as json
+import time
+
+BROKER = "mqtt.siliconwit.io"
+PORT = 1883
+CLIENT_ID = "pico-w-neopixel"
+TOPIC_PUB = b"pico/neopixel/state"
+TOPIC_SUB = b"pico/neopixel/command"
+
+def on_message(topic, msg):
+    """Handle incoming MQTT messages."""
+    try:
+        data = json.loads(msg)
+        print("MQTT command:", data)
+        # Update the shared state dictionary here
+        # For example: state["color"] = (data["r"], data["g"], data["b"])
+    except Exception as e:
+        print("MQTT parse error:", e)
+
+def mqtt_connect():
+    """Connect to the MQTT broker and subscribe to the command topic."""
+    client = MQTTClient(CLIENT_ID, BROKER, port=PORT)
+    client.set_callback(on_message)
+    client.connect()
+    client.subscribe(TOPIC_SUB)
+    print("Connected to MQTT broker at", BROKER)
+    return client
+
+def mqtt_publish_state(client, color, pattern):
+    """Publish the current LED state."""
+    payload = json.dumps({
+        "color": {"r": color[0], "g": color[1], "b": color[2]},
+        "pattern": pattern
+    })
+    client.publish(TOPIC_PUB, payload)
+```
+
+You can test this with SiliconWit's public MQTT broker at [https://mqtt.siliconwit.io/](https://mqtt.siliconwit.io/). Open a second MQTT client (such as MQTTX or mosquitto_sub on your computer), subscribe to `pico/neopixel/state`, and watch the messages appear when the Pico W publishes its LED state.
+
+To integrate MQTT into the main project, add a third coroutine that periodically calls `client.check_msg()` to process incoming messages and publishes state updates after each change:
+
+```python
+async def mqtt_loop(client):
+    """Check for MQTT messages and publish state periodically."""
+    while True:
+        client.check_msg()
+        await asyncio.sleep_ms(100)
+```
+
+Add this coroutine to the `asyncio.gather()` call in `main()` alongside the animation and server tasks.
+
+## Experiments
+
+<InArticleAd />
+
+
+<CardGrid>
+<Card title="Experiment 1: Add More Animation Patterns" icon="pencil">
+Add two new patterns to the NeoPixel controller: a "sparkle" effect that randomly lights individual pixels with brief white flashes, and a "fire" effect that simulates flickering flames using warm color gradients. Add corresponding buttons to the HTML interface and POST handlers in the server. Test each pattern to find the right frame delay for a natural appearance.
+</Card>
+
+<Card title="Experiment 2: mDNS Discovery" icon="pencil">
+Instead of remembering the Pico's IP address, configure mDNS so you can reach the device at `http://neopixel.local`. MicroPython does not include mDNS by default, but you can implement a minimal mDNS responder that replies to queries for your chosen hostname. Research the mDNS packet format (multicast to 224.0.0.251 on port 5353) and write a UDP listener that responds with the Pico's IP address.
+</Card>
+
+<Card title="Experiment 3: BLE Control" icon="pencil">
+The CYW43439 supports Bluetooth Low Energy. Use MicroPython's `bluetooth` module to create a BLE GATT service with characteristics for color (3 bytes: R, G, B), pattern (1 byte: pattern index), and brightness (1 byte: 0 to 100). Write a BLE central script on your computer or use a phone app like nRF Connect to send commands. Compare the latency and range with the Wi-Fi HTTP approach.
+</Card>
+
+<Card title="Experiment 4: Scheduled On/Off Times" icon="pencil">
+Add a scheduling feature that turns the LED strip on and off at configured times. Use the Pico W's ability to sync time via NTP (`ntptime.settime()` in MicroPython) to get the current time. Store the schedule in a JSON file on the filesystem. Add schedule configuration endpoints to the web server and display the current schedule on the HTML page.
+</Card>
+</CardGrid>
+
+## Summary
+
+<InArticleAd />
+
+
+The Pico W extends the RP2040 with Infineon's CYW43439 wireless chip, connected over SPI and managed through MicroPython's `network` module. Wi-Fi station mode connects the board to an existing network in a few lines of code: activate the WLAN interface, issue the connect call, wait for status 3, and read the IP address. Once connected, standard socket programming serves HTTP requests on port 80.
+
+The NeoPixel web controller demonstrates a practical pattern for wireless embedded projects: a shared state dictionary, an animation coroutine that reads the state on every frame, and a server coroutine that updates the state when HTTP commands arrive. MicroPython's `uasyncio` handles cooperative scheduling between the two tasks on the single-core MicroPython runtime. The PIO state machine from Lesson 3 handles all timing-critical LED signaling, freeing the CPU for network and application code.
+
+MQTT extends the same architecture to publish/subscribe messaging, enabling integration with IoT dashboards and other devices on the network. With Wi-Fi, HTTP, MQTT, PIO, and asyncio all working together, the Pico W becomes a capable platform for connected embedded systems.
+
+<EmbeddedProgrammingRpiPicoComments />
+
+
+
+<InArticleAd />
+<TawkWidget />
+<Copyright />

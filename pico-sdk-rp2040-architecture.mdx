@@ -1,0 +1,613 @@
+---
+title: "Pico SDK and RP2040 Architecture"
+description: "Install the Pico C SDK, understand CMake build flow, dual Cortex-M0+ cores, bus fabric, and UF2 boot process. Build a USB text injector that types a predefined message when the Pico is plugged into any computer."
+contributors: "sam-macharia,lawrence-langat"
+pubDate: 2026-01-24
+tags: ["rp2040", "pico-sdk", "cmake", "architecture", "usb", "raspberry-pi-pico"]
+excerpt: "Install the Pico C SDK, understand the RP2040's dual-core architecture and bus fabric, learn the CMake build flow, and build a USB text injector that types a predefined message when plugged into any computer."
+heroImage: "https://cdn.siliconwit.com/education/embedded-programming-rpi-pico/RaspberryPi-Pico-Pinout.png"
+---
+
+import TawkWidget from '../../../../components/TawkWidget.astro';
+import UniversalContentContributors from '../../../../components/UniversalContentContributors.astro';
+import InArticleAd from '../../../../components/InArticleAd.astro';
+import Copyright from '../../../../components/Copyright.astro';
+import BionicText from '../../../../components/BionicText.astro';
+import TailwindWrapper from '../../../../components/TailwindWrapper.jsx';
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/starlight/components';
+
+<UniversalContentContributors 
+  contributors={frontmatter.contributors}
+/>
+
+
+
+import EmbeddedProgrammingRpiPicoComments from '../../../../components/embedded-programming-rpi-pico/EmbeddedProgrammingRpiPicoComments.astro';
+
+Plug a Raspberry Pi Pico into any computer and it types a message for you, no drivers, no serial monitor, no special software. The Pico enumerates as a USB HID keyboard and sends keystrokes automatically. Building this tiny project will teach you everything about the RP2040 boot process, the Pico SDK toolchain, and the CMake build system that ties it all together. #PicoSDK #RP2040 #EmbeddedSystems
+
+## What We Are Building
+
+<Card title="USB Text Injector" icon="star">
+A Raspberry Pi Pico programmed to appear as a USB keyboard. When plugged into any computer, it waits briefly, then types a predefined text string one character at a time. No drivers or software needed on the host. This demonstrates UF2 flashing, the TinyUSB HID stack, and the complete SDK build pipeline.
+</Card>
+
+**Project specifications:**
+
+| Parameter | Value |
+|-----------|-------|
+| MCU | RP2040 (dual Cortex-M0+ at 133 MHz) |
+| USB Mode | HID Keyboard (TinyUSB) |
+| Input | None (self-contained) |
+| Output | USB keystrokes sent to host PC |
+| Flash Method | UF2 drag-and-drop via BOOTSEL |
+| Build System | CMake + Pico SDK |
+| Power | USB bus powered (5V) |
+
+### Bill of Materials
+
+| Ref | Component | Quantity | Notes |
+|-----|-----------|----------|-------|
+| 1 | Raspberry Pi Pico | 1 | Any revision with micro USB |
+| 2 | Micro USB cable | 1 | Data cable, not charge-only |
+
+## Installing the Pico SDK
+
+<InArticleAd />
+
+
+<Tabs>
+<TabItem label="Linux">
+```bash
+# Install build tools
+sudo apt update
+sudo apt install cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential libstdc++-arm-none-eabi-newlib git
+
+# Clone the Pico SDK
+cd ~
+git clone https://github.com/raspberrypi/pico-sdk.git
+cd pico-sdk
+git submodule update --init
+
+# Set the SDK path (add to ~/.bashrc for persistence)
+export PICO_SDK_PATH=$HOME/pico-sdk
+echo 'export PICO_SDK_PATH=$HOME/pico-sdk' >> ~/.bashrc
+```
+
+Verify the toolchain:
+
+```bash
+arm-none-eabi-gcc --version
+cmake --version
+```
+</TabItem>
+<TabItem label="macOS">
+```bash
+# Install via Homebrew
+brew install cmake arm-none-eabi-gcc
+
+# Clone the Pico SDK
+cd ~
+git clone https://github.com/raspberrypi/pico-sdk.git
+cd pico-sdk
+git submodule update --init
+
+# Set the SDK path (add to ~/.zshrc for persistence)
+export PICO_SDK_PATH=$HOME/pico-sdk
+echo 'export PICO_SDK_PATH=$HOME/pico-sdk' >> ~/.zshrc
+```
+
+Verify the toolchain:
+
+```bash
+arm-none-eabi-gcc --version
+cmake --version
+```
+</TabItem>
+<TabItem label="Windows">
+Download and install the following:
+
+1. [ARM GCC Toolchain](https://developer.arm.com/downloads/-/gnu-rm) (add to PATH during install)
+2. [CMake](https://cmake.org/download/) (add to PATH during install)
+3. [Git for Windows](https://git-scm.com/download/win)
+4. [Build Tools for Visual Studio](https://visualstudio.microsoft.com/downloads/) (select "C++ build tools")
+
+Then open a Developer Command Prompt:
+
+```bash
+cd %USERPROFILE%
+git clone https://github.com/raspberrypi/pico-sdk.git
+cd pico-sdk
+git submodule update --init
+```
+
+Set the environment variable permanently through System Properties, or in the current session:
+
+```bash
+set PICO_SDK_PATH=%USERPROFILE%\pico-sdk
+setx PICO_SDK_PATH %USERPROFILE%\pico-sdk
+```
+
+Verify the toolchain:
+
+```bash
+arm-none-eabi-gcc --version
+cmake --version
+```
+</TabItem>
+</Tabs>
+
+## RP2040 Architecture
+
+<InArticleAd />
+
+
+The RP2040 is the microcontroller at the heart of the Raspberry Pi Pico. Understanding its architecture helps you write better firmware and debug problems that would otherwise seem mysterious.
+
+### Dual Cortex-M0+ Cores
+
+The RP2040 contains two ARM Cortex-M0+ processor cores running at up to 133 MHz. Both cores share the same address space, meaning they can access the same peripherals and memory. Core 0 is the default execution core. Core 1 starts in a sleep state and can be launched from firmware using the `multicore_launch_core1()` SDK function. Each core has its own stack pointer and can run independent code, but they share all peripheral registers and SRAM.
+
+The Cortex-M0+ is the smallest ARM core with a Thumb-2 instruction set. It has a two-stage pipeline, single-cycle I/O port access, and a hardware multiplier. There is no floating-point unit, so all floating-point operations are emulated in software.
+
+### Memory: 264 KB SRAM in 6 Banks
+
+The RP2040 has 264 KB of on-chip SRAM divided into six banks:
+
+| Bank | Size | Address Range |
+|------|------|---------------|
+| Bank 0 | 64 KB | 0x20000000 to 0x2000FFFF |
+| Bank 1 | 64 KB | 0x20010000 to 0x2001FFFF |
+| Bank 2 | 64 KB | 0x20020000 to 0x2002FFFF |
+| Bank 3 | 64 KB | 0x20030000 to 0x2003FFFF |
+| Bank 4 | 4 KB | 0x20040000 to 0x20040FFF |
+| Bank 5 | 4 KB | 0x20041000 to 0x20041FFF |
+
+Banks 0 through 3 are striped: consecutive 32-bit words go to different banks. This means both cores and DMA can often access SRAM simultaneously without stalling, because their accesses hit different banks. Banks 4 and 5 are smaller and often used for the core 0 and core 1 stacks.
+
+### Bus Fabric (AHB-Lite Crossbar)
+
+The bus fabric is the interconnect that routes data between masters (both CPU cores and DMA) and slaves (SRAM banks, peripherals, and flash). It is a full crossbar, meaning multiple masters can access different slaves at the same time without conflict. If two masters try to access the same slave in the same cycle, the arbiter grants one and stalls the other.
+
+This crossbar design is what makes the dual-core architecture practical. Core 0 can read from SRAM bank 0 while core 1 writes to SRAM bank 2 and DMA transfers data from a peripheral to SRAM bank 1, all in the same clock cycle.
+
+### Boot Process
+
+The RP2040 boot sequence has three stages:
+
+<Steps>
+1. **ROM Bootloader (on-chip):** The RP2040 has a 16 KB mask ROM at address 0x00000000. On power-up, the chip always starts executing from this ROM. The ROM bootloader checks the external flash for a valid second-stage boot header. If the BOOTSEL button is held during reset (or no valid flash image is found), the ROM enumerates as a USB mass storage device, ready to accept a UF2 file.
+
+2. **Second-Stage Boot (in flash):** The first 256 bytes of external flash contain a second-stage bootloader. This small program configures the flash chip for XIP (Execute In Place) mode, setting up the correct SPI clock speed and read commands. The Pico SDK provides this bootloader automatically.
+
+3. **Application Entry:** Once XIP is configured, the processor reads the vector table from flash and jumps to the reset handler, which is your `main()` function after the SDK runtime initialization runs.
+</Steps>
+
+The UF2 (USB Flashing Format) file format is what makes the drag-and-drop programming possible. When the Pico appears as a USB drive, you simply copy the `.uf2` file to it. The ROM bootloader writes each UF2 block to the correct flash address and reboots.
+
+## Project Structure
+
+<InArticleAd />
+
+
+Create a project directory with the following layout:
+
+<FileTree>
+- usb-text-injector/
+  - CMakeLists.txt
+  - main.c
+  - tusb_config.h
+  - usb_descriptors.c
+  - pico_sdk_import.cmake
+  - build/
+</FileTree>
+
+The `pico_sdk_import.cmake` file is a helper script that locates the Pico SDK using the `PICO_SDK_PATH` environment variable. Copy it from the SDK:
+
+```bash
+cp $PICO_SDK_PATH/external/pico_sdk_import.cmake .
+```
+
+## CMakeLists.txt
+
+<InArticleAd />
+
+
+CMake is the build system used by the Pico SDK. The `CMakeLists.txt` file defines your project, tells CMake where to find the SDK, and specifies which libraries to link. Here is the minimum configuration for a TinyUSB HID project:
+
+```cmake
+cmake_minimum_required(VERSION 3.13)
+
+# Pull in the Pico SDK (must come before project())
+include(pico_sdk_import.cmake)
+
+project(usb_text_injector C CXX ASM)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+
+# Initialize the SDK
+pico_sdk_init()
+
+add_executable(usb_text_injector
+    main.c
+    usb_descriptors.c
+)
+
+# Link the TinyUSB device library and standard SDK libraries
+target_link_libraries(usb_text_injector
+    pico_stdlib
+    tinyusb_device
+    tinyusb_board
+)
+
+# Include the current directory for tusb_config.h
+target_include_directories(usb_text_injector PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# Create UF2 output alongside ELF
+pico_add_extra_outputs(usb_text_injector)
+```
+
+Key points about this file:
+
+- `pico_sdk_init()` must be called after `project()` but before any target definitions.
+- `tinyusb_device` and `tinyusb_board` are SDK libraries that provide the full TinyUSB stack compiled for the RP2040.
+- `pico_add_extra_outputs()` generates `.uf2`, `.bin`, and `.dis` (disassembly) files in addition to the `.elf`.
+
+## UF2 Flashing
+
+<InArticleAd />
+
+
+The Raspberry Pi Pico uses a simple drag-and-drop method for programming:
+
+<Steps>
+1. Unplug the Pico from USB.
+
+2. Hold down the BOOTSEL button (the white button on the board).
+
+3. While holding BOOTSEL, plug the Pico into your computer via USB.
+
+4. Release BOOTSEL. The Pico appears as a USB mass storage device named `RPI-RP2`.
+
+5. Drag (or copy) the `.uf2` file onto the `RPI-RP2` drive.
+
+6. The Pico automatically flashes the firmware, unmounts the drive, and reboots into your application.
+</Steps>
+
+On Linux, the drive typically mounts under `/media/$USER/RPI-RP2`. On macOS it appears on the desktop and in `/Volumes/RPI-RP2`. On Windows it shows up as a new drive letter in File Explorer.
+
+:::tip
+You only need the BOOTSEL button for the initial flash or to recover from a bad firmware. Once your application is running, you can also use SWD (Serial Wire Debug) with a debugger probe to flash without unplugging.
+:::
+
+## TinyUSB HID Keyboard Configuration
+
+<InArticleAd />
+
+
+TinyUSB is the USB stack included with the Pico SDK. To make the Pico appear as a USB HID keyboard, you need two configuration files: `tusb_config.h` and `usb_descriptors.c`.
+
+### tusb_config.h
+
+This header tells TinyUSB what kind of device to build. The key settings are the device class (HID), the endpoint buffer size, and the report descriptor length.
+
+```c
+#ifndef TUSB_CONFIG_H
+#define TUSB_CONFIG_H
+
+/* Board and MCU configuration (RP2040) */
+#define CFG_TUSB_MCU          OPT_MCU_RP2040
+#define CFG_TUSB_OS           OPT_OS_PICO
+
+/* USB device configuration */
+#define CFG_TUD_ENABLED       1
+#define CFG_TUD_HID           1
+#define CFG_TUD_CDC           0
+#define CFG_TUD_MSC           0
+#define CFG_TUD_MIDI          0
+#define CFG_TUD_VENDOR        0
+
+/* HID buffer size */
+#define CFG_TUD_HID_EP_BUFSIZE 16
+
+#endif /* TUSB_CONFIG_H */
+```
+
+### usb_descriptors.c
+
+The USB descriptor file defines the device identity (VID/PID, manufacturer string, product string) and the HID report descriptor that tells the host OS what kind of input the device produces. The report descriptor below defines a standard keyboard with modifier keys and six simultaneous key slots.
+
+```c
+#include "tusb.h"
+
+/* HID Report Descriptor: standard keyboard */
+static const uint8_t desc_hid_report[] = {
+    TUD_HID_REPORT_DESC_KEYBOARD()
+};
+
+/* Device Descriptor */
+static const tusb_desc_device_t desc_device = {
+    .bLength            = sizeof(tusb_desc_device_t),
+    .bDescriptorType    = TUSB_DESC_DEVICE,
+    .bcdUSB             = 0x0200,
+    .bDeviceClass       = 0x00,
+    .bDeviceSubClass    = 0x00,
+    .bDeviceProtocol    = 0x00,
+    .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
+    .idVendor           = 0xCafe,
+    .idProduct          = 0x4001,
+    .bcdDevice          = 0x0100,
+    .iManufacturer      = 1,
+    .iProduct           = 2,
+    .iSerialNumber      = 3,
+    .bNumConfigurations = 1
+};
+
+const uint8_t *tud_descriptor_device_cb(void)
+{
+    return (const uint8_t *)&desc_device;
+}
+
+/* Configuration Descriptor */
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
+
+static const uint8_t desc_configuration[] = {
+    TUD_CONFIG_DESCRIPTOR(1, 1, 0, CONFIG_TOTAL_LEN,
+                          TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+    TUD_HID_DESCRIPTOR(0, 0, HID_ITF_PROTOCOL_KEYBOARD,
+                       sizeof(desc_hid_report), 0x81, CFG_TUD_HID_EP_BUFSIZE, 10)
+};
+
+const uint8_t *tud_descriptor_configuration_cb(uint8_t index)
+{
+    (void)index;
+    return desc_configuration;
+}
+
+/* HID Report Descriptor callback */
+const uint8_t *tud_hid_descriptor_report_cb(uint8_t instance)
+{
+    (void)instance;
+    return desc_hid_report;
+}
+
+/* String Descriptors */
+static const char *string_desc_arr[] = {
+    [0] = (const char[]){0x09, 0x04},   /* Language: English (US) */
+    [1] = "SiliconWit",                  /* Manufacturer */
+    [2] = "Pico Text Injector",          /* Product */
+    [3] = "000001"                       /* Serial */
+};
+
+static uint16_t _desc_str[32];
+
+const uint16_t *tud_descriptor_string_cb(uint8_t index, uint16_t langid)
+{
+    (void)langid;
+    uint8_t chr_count;
+
+    if (index == 0) {
+        memcpy(&_desc_str[1], string_desc_arr[0], 2);
+        chr_count = 1;
+    } else {
+        if (index >= sizeof(string_desc_arr) / sizeof(string_desc_arr[0]))
+            return NULL;
+        const char *str = string_desc_arr[index];
+        chr_count = strlen(str);
+        if (chr_count > 31) chr_count = 31;
+        for (uint8_t i = 0; i < chr_count; i++)
+            _desc_str[1 + i] = str[i];
+    }
+
+    _desc_str[0] = (TUSB_DESC_STRING << 8) | (2 * chr_count + 2);
+    return _desc_str;
+}
+```
+
+## Complete Firmware
+
+<InArticleAd />
+
+
+The main firmware waits for USB enumeration to complete, pauses for one second so the host OS finishes loading the HID driver, and then types out a predefined message one character at a time. Each character is converted to the corresponding HID keycode, sent as a key-press report, then released with an empty report. The delay between keystrokes keeps the output readable.
+
+```c
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "pico/stdlib.h"
+#include "tusb.h"
+
+/* Message to type when plugged in */
+static const char *MESSAGE = "Hello from Raspberry Pi Pico!\n";
+
+/* Convert an ASCII character to HID keycode and modifier */
+static void char_to_keycode(char c, uint8_t *keycode, uint8_t *modifier)
+{
+    *modifier = 0;
+    *keycode  = 0;
+
+    if (c >= 'a' && c <= 'z') {
+        *keycode = HID_KEY_A + (c - 'a');
+    } else if (c >= 'A' && c <= 'Z') {
+        *keycode  = HID_KEY_A + (c - 'A');
+        *modifier = KEYBOARD_MODIFIER_LEFTSHIFT;
+    } else if (c >= '1' && c <= '9') {
+        *keycode = HID_KEY_1 + (c - '1');
+    } else if (c == '0') {
+        *keycode = HID_KEY_0;
+    } else {
+        switch (c) {
+            case ' ':  *keycode = HID_KEY_SPACE;          break;
+            case '\n': *keycode = HID_KEY_ENTER;          break;
+            case '\t': *keycode = HID_KEY_TAB;            break;
+            case '.':  *keycode = HID_KEY_PERIOD;         break;
+            case ',':  *keycode = HID_KEY_COMMA;          break;
+            case '!':  *keycode = HID_KEY_1;
+                       *modifier = KEYBOARD_MODIFIER_LEFTSHIFT; break;
+            case '?':  *keycode = HID_KEY_SLASH;
+                       *modifier = KEYBOARD_MODIFIER_LEFTSHIFT; break;
+            case '-':  *keycode = HID_KEY_MINUS;          break;
+            case '=':  *keycode = HID_KEY_EQUAL;          break;
+            case '/':  *keycode = HID_KEY_SLASH;          break;
+            case ':':  *keycode = HID_KEY_SEMICOLON;
+                       *modifier = KEYBOARD_MODIFIER_LEFTSHIFT; break;
+            case ';':  *keycode = HID_KEY_SEMICOLON;      break;
+            case '\'': *keycode = HID_KEY_APOSTROPHE;     break;
+            default:   *keycode = 0;                      break;
+        }
+    }
+}
+
+/* Send a single keystroke (press + release) */
+static void send_key(uint8_t keycode, uint8_t modifier)
+{
+    uint8_t report[6] = {0};
+    report[0] = keycode;
+
+    /* Key press */
+    tud_hid_keyboard_report(0, modifier, report);
+    sleep_ms(15);
+
+    /* Key release (empty report) */
+    tud_hid_keyboard_report(0, 0, NULL);
+    sleep_ms(15);
+}
+
+/* Type a full string character by character */
+static void type_string(const char *str)
+{
+    for (size_t i = 0; i < strlen(str); i++) {
+        uint8_t keycode, modifier;
+        char_to_keycode(str[i], &keycode, &modifier);
+        if (keycode != 0) {
+            send_key(keycode, modifier);
+            sleep_ms(50);  /* Delay between characters for readability */
+        }
+    }
+}
+
+/* TinyUSB HID callbacks (required by the stack) */
+uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
+                                hid_report_type_t report_type,
+                                uint8_t *buffer, uint16_t reqlen)
+{
+    (void)instance; (void)report_id; (void)report_type;
+    (void)buffer;   (void)reqlen;
+    return 0;
+}
+
+void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
+                            hid_report_type_t report_type,
+                            const uint8_t *buffer, uint16_t bufsize)
+{
+    (void)instance; (void)report_id; (void)report_type;
+    (void)buffer;   (void)bufsize;
+}
+
+int main(void)
+{
+    /* Initialize board and USB */
+    board_init();
+    tusb_init();
+
+    /* Wait for USB to enumerate */
+    while (!tud_mounted()) {
+        tud_task();
+        sleep_ms(10);
+    }
+
+    /* Give the host OS time to load the HID driver */
+    sleep_ms(1000);
+
+    /* Type the message */
+    type_string(MESSAGE);
+
+    /* Keep USB alive (required by TinyUSB) */
+    while (1) {
+        tud_task();
+        sleep_ms(100);
+    }
+
+    return 0;
+}
+```
+
+### How It Works
+
+The firmware follows a straightforward sequence:
+
+1. `board_init()` configures the Pico's clocks, GPIO, and on-board LED.
+2. `tusb_init()` initializes the TinyUSB stack and starts USB enumeration. The host PC sees a new HID keyboard device.
+3. The main loop polls `tud_task()` until `tud_mounted()` returns true, meaning the host has accepted the device.
+4. After a 1-second delay, `type_string()` iterates through each character of the message. For each character, `char_to_keycode()` maps it to a USB HID keycode (and shift modifier if needed), and `send_key()` transmits a press report followed by a release report.
+5. After typing finishes, the firmware continues calling `tud_task()` in an infinite loop. This keeps the USB connection alive so the host does not report a device disconnect.
+
+The 15 ms delay between press and release, plus the 50 ms delay between characters, produces clean output at roughly 12 characters per second. If you reduce these delays too much, some operating systems may drop keystrokes.
+
+## Building and Flashing
+
+<InArticleAd />
+
+
+<Steps>
+1. Create the build directory and run CMake:
+   ```bash
+   cd usb-text-injector
+   mkdir build && cd build
+   cmake ..
+   ```
+
+2. Compile the project:
+   ```bash
+   make -j$(nproc)
+   ```
+   This produces `usb_text_injector.uf2` in the build directory. The output also shows flash and RAM usage.
+
+3. Put the Pico into BOOTSEL mode: unplug it, hold the BOOTSEL button, plug it back in, then release the button.
+
+4. Copy the UF2 file to the Pico:
+   ```bash
+   # Linux
+   cp usb_text_injector.uf2 /media/$USER/RPI-RP2/
+
+   # macOS
+   cp usb_text_injector.uf2 /Volumes/RPI-RP2/
+
+   # Windows (adjust drive letter)
+   copy usb_text_injector.uf2 E:\
+   ```
+
+5. The Pico reboots, enumerates as a keyboard, waits one second, and types the message into whatever application has focus.
+</Steps>
+
+:::caution
+Open a text editor and click into it before plugging the Pico in. The device will start typing into whatever window has focus. If that happens to be a terminal, it could execute unintended commands.
+:::
+
+## Exercises
+
+<InArticleAd />
+
+
+1. Modify the `MESSAGE` string to type your full name, email address, and a greeting on separate lines. Verify that special characters (periods, at-signs, colons) are handled correctly, and add any missing keycode mappings.
+2. Add an on-board LED blink after each character is typed. Use `gpio_put(PICO_DEFAULT_LED_PIN, 1)` and `gpio_put(PICO_DEFAULT_LED_PIN, 0)` with a short delay. This gives visual feedback during typing.
+3. Make the Pico wait for a button press before typing. Connect a tactile button between GP14 and GND, enable the internal pull-up with `gpio_pull_up()`, and only call `type_string()` when the button is pressed. This prevents accidental typing on every plug-in.
+4. Extend the firmware to type the message repeatedly with a 5-second pause between cycles. Add a cycle counter and stop after 3 repetitions, then turn on the LED to indicate completion.
+
+## Summary
+
+<InArticleAd />
+
+
+You installed the Pico C SDK, learned how the RP2040's dual Cortex-M0+ cores share 264 KB of banked SRAM through an AHB-Lite crossbar, and traced the three-stage boot process from mask ROM through XIP flash to your application. The CMake build system compiles your code, links the SDK libraries, and produces a UF2 file that you drag onto the Pico. The USB text injector project demonstrated the TinyUSB HID stack, descriptor configuration, and keycode mapping. Every lesson in this course builds on this same SDK setup, CMake workflow, and UF2 flash process.
+
+<EmbeddedProgrammingRpiPicoComments />
+
+
+
+<InArticleAd />
+<TawkWidget />
+<Copyright />
