@@ -12,6 +12,8 @@ sidebar:
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Contributors Welcome](https://img.shields.io/badge/contributors-welcome-orange)
 
+**Read this course at:** [https://siliconwit.com/education/embedded-programming-rpi-pico/](https://siliconwit.com/education/embedded-programming-rpi-pico/)
+
 A course on RP2040 development using the Pico C/C++ SDK. Lessons cover PIO programmable state machines, multicore programming, DMA, USB device classes, MicroPython, and wireless connectivity with Pico W.
 
 ## Lessons
