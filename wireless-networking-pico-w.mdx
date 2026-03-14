@@ -62,6 +62,25 @@ A Pico W running MicroPython connects to your Wi-Fi network and serves a web pag
 
 The Pico W adds an Infineon CYW43439 wireless chip to the standard Pico board. This chip supports 802.11n Wi-Fi on the 2.4 GHz band and Bluetooth 5.2 (including BLE). The CYW43439 connects to the RP2040 over SPI, not through the general-purpose GPIO pins. This means the wireless chip does not consume any of the GPIO pins you use for your own peripherals.
 
+```text
+ Pico W Internal Architecture
+ ┌──────────────────────────────────────┐
+ │  Raspberry Pi Pico W                │
+ │                                      │
+ │  ┌────────────┐   SPI   ┌─────────┐│
+ │  │  RP2040    │<────────>│ CYW43439││
+ │  │            │ (internal│         ││
+ │  │ Cortex-M0+ │  pins)  │ Wi-Fi   ││
+ │  │ Cortex-M0+ │         │ BLE 5.2 ││
+ │  │            │         │         ││
+ │  │ GPIO 0..28 │         │ Onboard ││
+ │  │ (user pins)│         │ LED     ││
+ │  └────────────┘         │ Antenna ││
+ │                          └─────────┘│
+ │  USB        30 user GPIOs remain    │
+ └──┤├─────────────────────────────────┘
+```
+
 One important difference from the standard Pico: the onboard LED is no longer connected to GP25. On the Pico W, the LED is routed through the CYW43 wireless chip. You must use the CYW43 driver to control it. In MicroPython, the pin name `"LED"` maps to the correct CYW43 GPIO internally.
 
 ### Blinking the Onboard LED
@@ -158,6 +177,25 @@ The `wlan.config(pm=0xa11140)` call configures power management. The default pow
 
 
 With Wi-Fi connected and an IP address assigned, the Pico W can send and receive data over TCP. MicroPython includes `usocket` (aliased as `socket`) for BSD-style socket programming. A web server listens for incoming TCP connections on port 80, reads the HTTP request, and sends back an HTTP response.
+
+```text
+ Pico W Web Server Flow
+ ┌──────────┐  1. Connect   ┌──────────┐
+ │  Phone   │  to Wi-Fi     │  Pico W  │
+ │  Browser ├──────────────>│ TCP :80  │
+ │          │               │          │
+ │          │  2. HTTP GET  │          │
+ │          ├──────────────>│ Parse    │
+ │          │  /color?r=255 │ request  │
+ │          │               │          │
+ │          │  3. Response  │ Update   │
+ │          │<──────────────┤ NeoPixels│
+ │          │  200 OK +     │ via PIO  │
+ │  Shows   │  HTML page    │          │
+ │  color   │               │          │
+ │  picker  │               │          │
+ └──────────┘               └──────────┘
+```
 
 ### Minimal Web Server
 

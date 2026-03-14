@@ -116,6 +116,29 @@ gpio_disable_pulls(14);
 
 The RP2040 has 8 PWM slices, numbered 0 through 7. Each slice contains a 16-bit counter and two output channels, A and B. Both channels in a slice share the same counter and frequency, but each channel has its own independent duty cycle (compare level).
 
+```text
+ PWM Slice Architecture (1 of 8 slices)
+ ┌──────────────────────────────────────┐
+ │  Slice N                            │
+ │  ┌────────────┐                     │
+ │  │ Clock Div  │                     │
+ │  │ (integer + │                     │
+ │  │  fraction) │                     │
+ │  └─────┬──────┘                     │
+ │        v                            │
+ │  ┌────────────┐   ┌──────┐         │
+ │  │  16-bit    │   │ CCR_A│  Channel A
+ │  │  Counter   ├──>│ CMP  ├────> GPIO (A)
+ │  │ 0 to WRAP  │   └──────┘         │
+ │  │            │   ┌──────┐         │
+ │  │            ├──>│ CCR_B│  Channel B
+ │  │            │   │ CMP  ├────> GPIO (B)
+ │  └────────────┘   └──────┘         │
+ │  Same frequency,                    │
+ │  independent duty cycles            │
+ └──────────────────────────────────────┘
+```
+
 The mapping from GPIO number to PWM slice and channel is fixed:
 
 | GPIO | Slice | Channel |
@@ -284,6 +307,23 @@ float temperature = 27.0f - (voltage - 0.706f) / 0.001721f;
 
 <InArticleAd />
 
+
+```text
+  Pico Wiring: ADC + PWM LED
+  ┌──────────────────┐
+  │  Raspberry Pi    │
+  │  Pico            │
+  │             3V3  ├─── Pot pin 1
+  │                  │
+  │    GP26 (ADC0)   ├─── Pot wiper (middle)
+  │                  │
+  │             GND  ├─── Pot pin 3
+  │                  │
+  │    GP15 (PWM 7B) ├──[R1 220R]──┤>├── GND
+  │                  │              LED
+  │      USB         │
+  └───────┤├─────────┘
+```
 
 Connect the potentiometer and LED to the Pico as follows:
 

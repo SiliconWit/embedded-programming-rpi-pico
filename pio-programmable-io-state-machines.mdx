@@ -75,6 +75,30 @@ Each state machine has:
 | A clock divider | Derives the state machine clock from the 125 MHz system clock |
 | Pin mappings | Configurable sets of GPIO pins for input, output, set, and sideset |
 
+```text
+ PIO State Machine Architecture
+ ┌─────────────────────────────────────┐
+ │  PIO Block (PIO0 or PIO1)          │
+ │  ┌───────────────────────────────┐  │
+ │  │ Shared Instruction Memory     │  │
+ │  │ (32 x 16-bit instructions)    │  │
+ │  └───────────────────────────────┘  │
+ │                                     │
+ │  State Machine N (1 of 4):         │
+ │  ┌────────┐  ┌─────┐  ┌────────┐  │
+ │  │ TX FIFO│  │ OSR │  │  GPIO  │  │
+ │  │ 4 words├─>│Shift├─>│  Pins  │  │
+ │  │(CPU in)│  │ Out │  │ (out)  │  │
+ │  └────────┘  └─────┘  └────────┘  │
+ │  ┌────────┐  ┌─────┐  ┌────────┐  │
+ │  │ RX FIFO│  │ ISR │  │  GPIO  │  │
+ │  │ 4 words│<─┤Shift│<─┤  Pins  │  │
+ │  │(CPU out│  │ In  │  │ (in)   │  │
+ │  └────────┘  └─────┘  └────────┘  │
+ │   X reg, Y reg, PC, Clock Div     │
+ └─────────────────────────────────────┘
+```
+
 The TX and RX FIFOs decouple the CPU from the state machine. The CPU pushes data into the TX FIFO whenever it is ready; the state machine pulls from it at its own pace. If the FIFO is full, the CPU blocks (or polls). If the FIFO is empty, the state machine stalls until data arrives.
 
 ## PIO Instruction Set
@@ -137,6 +161,26 @@ The WS2812B datasheet specifies an NRZ (non-return-to-zero) encoding where each 
 | Reset | Low for > 50 us | | |
 
 Both bit 0 and bit 1 start with the line going high. The difference is how long it stays high before going low. For a 0, the high pulse is short (400 ns) and the low pulse is long. For a 1, the high pulse is long (800 ns) and the low pulse is short.
+
+```text
+ WS2812B Bit Encoding (NRZ, 800 kHz)
+          1.25 us
+ Bit 0:  |<-------->|
+         ┌──┐
+         │  │ 400ns
+         │  └────────┐ 850ns
+         │           │
+ ────────┘           └────────
+
+ Bit 1:  |<-------->|
+         ┌───────┐
+         │       │ 800ns
+         │       └───┐ 450ns
+         │           │
+ ────────┘           └────────
+
+ Reset:  Low for > 50 us (latch data)
+```
 
 The pixel data format is 24 bits per LED in GRB order (green first, then red, then blue), MSB first. For a strip of N LEDs, you send N x 24 bits continuously, then hold the line low for at least 50 us to latch the data.
 

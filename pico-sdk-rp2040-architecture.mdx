@@ -145,6 +145,31 @@ cmake --version
 
 The RP2040 is the microcontroller at the heart of the Raspberry Pi Pico. Understanding its architecture helps you write better firmware and debug problems that would otherwise seem mysterious.
 
+```text
+ RP2040 Block Diagram
+ ┌─────────────────────────────────────────┐
+ │  ┌──────────┐        ┌──────────┐      │
+ │  │ Cortex-M0+│       │ Cortex-M0+│     │
+ │  │  Core 0   │       │  Core 1   │     │
+ │  │  133 MHz  │       │  133 MHz  │     │
+ │  └─────┬─────┘       └─────┬─────┘     │
+ │        └──────────┬─────────┘           │
+ │            ┌──────┴──────┐              │
+ │            │  Bus Fabric │              │
+ │            │  (AHB-Lite) │              │
+ │            └──┬───┬───┬──┘              │
+ │   ┌───────┐  │   │   │  ┌───────────┐  │
+ │   │ SRAM  │──┘   │   └──│ PIO x2    │  │
+ │   │ 264KB │      │      │ 8 machines│  │
+ │   │ 6 banks│     │      └───────────┘  │
+ │   └───────┘  ┌───┴────┐ ┌───────────┐  │
+ │   ┌───────┐  │  DMA   │ │ USB 1.1   │  │
+ │   │ Flash │  │ 12 ch  │ │ PHY       │  │
+ │   │ QSPI  │  └────────┘ └───────────┘  │
+ │   └───────┘                             │
+ └─────────────────────────────────────────┘
+```
+
 ### Dual Cortex-M0+ Cores
 
 The RP2040 contains two ARM Cortex-M0+ processor cores running at up to 133 MHz. Both cores share the same address space, meaning they can access the same peripherals and memory. Core 0 is the default execution core. Core 1 starts in a sleep state and can be launched from firmware using the `multicore_launch_core1()` SDK function. Each core has its own stack pointer and can run independent code, but they share all peripheral registers and SRAM.
@@ -258,6 +283,25 @@ Key points about this file:
 
 <InArticleAd />
 
+
+```text
+ UF2 Boot and Flash Process
+ ┌────────────┐  Hold BOOTSEL   ┌────────────┐
+ │   Pico     │  + plug USB     │   Pico     │
+ │ (running)  ├────────────────>│  BOOTSEL   │
+ └────────────┘                 │  (USB MSC) │
+                                └─────┬──────┘
+                                      │
+                   ┌──────────────────┘
+                   v
+            ┌──────────────┐    ┌────────────┐
+            │  RPI-RP2     │    │  Pico      │
+            │  USB Drive   │───>│  Flashes   │
+            │  Copy .uf2   │    │  & Reboots │
+            └──────────────┘    └────────────┘
+              Drag & drop         Runs your
+              firmware.uf2        application
+```
 
 The Raspberry Pi Pico uses a simple drag-and-drop method for programming:
 

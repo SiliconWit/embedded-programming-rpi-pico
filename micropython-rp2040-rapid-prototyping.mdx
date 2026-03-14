@@ -67,6 +67,34 @@ The fundamental tradeoff is execution speed versus development speed. A MicroPyt
 
 ### How It Works Internally
 
+```text
+ MicroPython Execution Pipeline
+ ┌────────────────┐
+ │  main.py       │  Your Python source
+ │  (on flash)    │
+ └───────┬────────┘
+         v
+ ┌────────────────┐
+ │  MicroPython   │  Runs on RP2040 itself
+ │  Compiler      │  (not your PC)
+ └───────┬────────┘
+         v
+ ┌────────────────┐
+ │  Bytecode      │  Compact instructions
+ │  (.mpy)        │  in RAM
+ └───────┬────────┘
+         v
+ ┌────────────────┐
+ │  MicroPython   │  Interprets bytecode
+ │  VM            │  Calls C drivers
+ └───────┬────────┘
+         v
+ ┌────────────────┐
+ │  RP2040 HW     │  Same registers as
+ │  Peripherals   │  the Pico C SDK
+ └────────────────┘
+```
+
 <Steps>
 1. You write a `.py` file (or type directly into the REPL).
 2. The MicroPython compiler (running on the RP2040 itself) parses the source and emits bytecode.
@@ -320,6 +348,27 @@ The structure mirrors the C firmware from Lesson 2 almost exactly. Here is a sid
 | Delay | `sleep_ms(200)` | `time.sleep_ms(50)` |
 
 The C version requires about 90 lines including headers, defines, and helper functions. The MicroPython version achieves the same result in about 55 lines. More importantly, you can modify the MicroPython version on the fly: change the filter size, adjust the print format, add a new sensor, all without recompiling or reflashing.
+
+```text
+ C SDK vs MicroPython Development
+ ┌─────────────────┐  ┌──────────────────┐
+ │  C SDK Workflow  │  │ MicroPython      │
+ │                  │  │ Workflow          │
+ │  Edit main.c    │  │ Edit main.py     │
+ │       │         │  │       │          │
+ │  cmake + make   │  │  (no build step) │
+ │  (~30 sec build)│  │                  │
+ │       │         │  │  Copy to Pico    │
+ │  UF2 flash or   │  │  (instant)       │
+ │  SWD upload     │  │       │          │
+ │  (~5 sec)       │  │  Ctrl+D reboot   │
+ │       │         │  │  (<1 sec)        │
+ │  Test           │  │  Test            │
+ │                  │  │                  │
+ │  Cycle: ~40 sec │  │  Cycle: ~3 sec   │
+ └─────────────────┘  └──────────────────┘
+  10-100x faster execution  10x faster iteration
+```
 
 ## PIO in MicroPython
 

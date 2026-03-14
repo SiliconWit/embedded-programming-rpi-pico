@@ -120,6 +120,24 @@ Both cores share the same 264 KB of SRAM. Global and static variables are access
 
 Each RP2040 core has a hardware mailbox FIFO that can hold up to 8 words of 32-bit data. Core 0 pushes to Core 1's FIFO, and Core 1 pushes to Core 0's FIFO. These are separate, unidirectional channels.
 
+```text
+ Inter-Core FIFO Communication
+ ┌──────────────┐         ┌──────────────┐
+ │   Core 0     │         │   Core 1     │
+ │  (Waveform   │         │  (Button     │
+ │   generator) │         │   scanner)   │
+ │              │  push   │              │
+ │  FIFO_WR ────┼────────>│  FIFO_RD     │
+ │              │  8 words│              │
+ │              │         │              │
+ │  FIFO_RD <───┼─────────┤  FIFO_WR     │
+ │              │  8 words│              │
+ │              │  push   │              │
+ └──────────────┘         └──────────────┘
+  Unidirectional channels, hardware-backed
+  No cache coherency issues (separate FIFOs)
+```
+
 ```c
 #include "pico/multicore.h"
 
@@ -336,6 +354,25 @@ The square wave outputs full amplitude for the first half of each cycle and zero
 
 <InArticleAd />
 
+
+```text
+ Dual-Core Tone Synthesizer Wiring
+ ┌──────────────────┐
+ │  Raspberry Pi    │
+ │  Pico            │
+ │                  │
+ │  GP10 ├─┤BTN1├── GND  (C4: 262 Hz)
+ │  GP11 ├─┤BTN2├── GND  (E4: 330 Hz)
+ │  GP12 ├─┤BTN3├── GND  (G4: 392 Hz)
+ │  GP13 ├─┤BTN4├── GND  (C5: 523 Hz)
+ │       (internal pull-ups)
+ │                  │
+ │  GP18 ├──── Piezo (+)
+ │   GND ├──── Piezo (-)
+ │                  │
+ │      USB         │
+ └───────┤├─────────┘
+```
 
 ### Button Wiring
 

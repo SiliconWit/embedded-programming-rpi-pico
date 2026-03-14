@@ -63,6 +63,27 @@ A voice/sound recorder built on the RP2040. An electret microphone module feeds 
 
 The RP2040 contains a DMA controller with 12 independent channels. Each channel can move data between any two addresses in the chip's memory map: peripheral to memory, memory to peripheral, or memory to memory. The CPU sets up the transfer by writing a source address, a destination address, a transfer count, and a control register. Once triggered, the DMA engine handles every byte without CPU involvement.
 
+```text
+ DMA Ping-Pong Audio Pipeline
+ ┌─────────┐  DREQ_ADC  ┌──────────────────┐
+ │   ADC   ├────────────>│  DMA Channel 0   │
+ │  FIFO   │  paced by   │  Write to Buf A  │
+ │ (8 kHz) │  ADC clock  │  (1024 samples)  │
+ └─────────┘             └────────┬─────────┘
+                          chain   │ on complete
+                         ┌────────v─────────┐
+                         │  DMA Channel 1   │
+                         │  Write to Buf B  │
+                         │  (1024 samples)  │
+                         └────────┬─────────┘
+                          chain   │ back to Ch0
+                         ┌────────v─────────┐
+                         │  CPU writes the  │
+                         │  filled buffer   │
+                         │  to SPI flash    │
+                         └──────────────────┘
+```
+
 ### DMA Channel Registers
 
 Each of the 12 channels has four core registers:
@@ -943,6 +964,25 @@ The build produces `audio_sampler.uf2` in the `build` directory.
 </Steps>
 
 ### Wiring Summary
+
+```text
+ Audio Sampler Circuit
+ ┌──────────────────┐
+ │  Pico            │       ┌─────────────┐
+ │  GP26 (ADC0) ────┼───────┤ Mic Module  │
+ │                  │       │ (MAX4466)   │
+ │  GP10 ───────────┼─┤BTN├─┤ GND         │
+ │                  │       └─────────────┘
+ │  GP18 ───────────┼──── Speaker/Buzzer
+ │                  │
+ │  GP14 (SCK) ─────┼──┐   ┌─────────────┐
+ │  GP15 (MOSI) ────┼──┼───┤ W25Q32      │
+ │  GP12 (MISO) ────┼──┼───┤ SPI Flash   │
+ │  GP13 (CS) ──────┼──┘   │ (4 MB)      │
+ │                  │       └─────────────┘
+ │  3V3, GND ───────┼──── Power rails
+ └───────┤├─────────┘
+```
 
 | Pico Pin | Connection | Notes |
 |----------|------------|-------|
