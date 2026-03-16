@@ -364,6 +364,7 @@ The USB descriptor file defines the device identity (VID/PID, manufacturer strin
 
 ```c
 #include "tusb.h"
+#include <string.h>
 
 /* HID Report Descriptor: standard keyboard */
 static const uint8_t desc_hid_report[] = {
@@ -462,6 +463,7 @@ The main firmware waits for USB enumeration to complete, pauses for one second s
 #include <string.h>
 
 #include "pico/stdlib.h"
+#include "bsp/board.h"
 #include "tusb.h"
 
 /* Message to type when plugged in */

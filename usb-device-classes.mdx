@@ -255,6 +255,7 @@ This file provides all the USB descriptors through TinyUSB callback functions. I
 ```c
 #include "tusb.h"
 #include "pico/unique_id.h"
+#include <string.h>
 
 /* ---------- Device Descriptor ---------- */
 
@@ -486,6 +487,7 @@ Each button connects between the GPIO pin and GND. We enable the internal pull-u
 #include <stdlib.h>
 
 #include "pico/stdlib.h"
+#include "bsp/board.h"
 #include "hardware/adc.h"
 #include "tusb.h"
 

@@ -25,7 +25,7 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingRpiPicoComments from '../../../../components/embedded-programming-rpi-pico/EmbeddedProgrammingRpiPicoComments.astro';
 
-Turn a potentiometer knob and watch an LED smoothly brighten or dim while the serial console prints the raw ADC value, the computed voltage, and the chip temperature. This lesson covers every layer of the RP2040's I/O system: GPIO multiplexing that lets any pin do almost anything, PWM slices with independent frequency and duty cycle control, the 12-bit SAR ADC with its dedicated input channels, and the hardware interpolators that can accelerate fixed-point math for free. #GPIO #PWM #AnalogIO
+On most microcontrollers, peripheral pins are fixed: UART on these two pins, SPI on those four, and if the layout conflicts with your PCB, you redesign the board. The RP2040's GPIO matrix lets you route almost any peripheral to almost any pin, which means your PCB layout drives your pin assignments, not the other way around. In this lesson you will explore that flexibility along with the PWM slice architecture, the 12-bit SAR ADC, the on-chip temperature sensor, and the hardware interpolators. The project is a potentiometer-controlled LED dimmer with live serial readout of ADC counts, voltage, and die temperature. #GPIO #PWM #AnalogIO
 
 ## What We Are Building
 

@@ -25,7 +25,7 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingRpiPicoComments from '../../../../components/embedded-programming-rpi-pico/EmbeddedProgrammingRpiPicoComments.astro';
 
-Swap your Pico for a Pico W and the RP2040 gains Wi-Fi and Bluetooth. Open your phone browser, navigate to the Pico's IP address, pick a color on the web UI, and the WS2812B strip from Lesson 3 changes instantly. This final lesson brings together everything from the course: PIO drives the LED protocol, the CYW43 wireless chip handles networking, and a lightweight web server running on MicroPython serves the control interface. You will configure Wi-Fi station mode, set up TCP sockets, handle HTTP requests, and push real-time color updates to the NeoPixel strip. #PicoW #WiFi #WirelessEmbedded
+Every project so far has required a USB cable for control and monitoring. That limits where you can deploy the device: it has to be within reach of a laptop. Adding Wi-Fi turns the Pico into a standalone networked node you can control from any phone or browser on the same network. This final lesson brings together everything from the course: PIO drives the WS2812B LED protocol from Lesson 3, the CYW43 wireless chip handles networking, and a lightweight MicroPython web server serves a color picker UI. You will configure Wi-Fi station mode, set up TCP sockets, handle HTTP requests, and push real-time color updates to the NeoPixel strip. #PicoW #WiFi #WirelessEmbedded
 
 ## What We Are Building
 

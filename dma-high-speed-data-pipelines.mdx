@@ -143,10 +143,10 @@ The RP2040's ADC can run in free-running mode, where it continuously converts an
 The ADC runs at 48 MHz and needs 96 cycles per conversion, giving a maximum rate of 500 kHz. To sample at 8 kHz, we set the clock divider:
 
 ```
-divider = (48,000,000 / 96) / 8000 - 1 = 624 - 1 = 623
+divider = 48,000,000 / (96 * 8000) - 1 = 62.5 - 1 = 61.5
 ```
 
-Calling `adc_set_clkdiv(623.0f)` inserts 623 extra cycles between conversions, yielding one sample every 125 microseconds (8 kHz).
+Calling `adc_set_clkdiv(61.5f)` inserts 61.5 extra cycles between conversions, yielding one sample every 125 microseconds (8 kHz).
 
 ### ADC FIFO Configuration
 
@@ -413,6 +413,10 @@ void flash_chip_erase(void) {
     flash_wait_busy();  // Full chip erase takes ~10-25 seconds
 }
 ```
+
+:::note
+The minimal driver above uses GP10-GP13 for illustration. The complete project below uses GP12-GP15 to avoid conflicts with other peripherals. Adjust the pin definitions to match your wiring.
+:::
 
 The flash write functions include `flash_wait_busy()` calls, which block until the flash chip finishes its internal operation. During recording, the CPU calls these functions on the completed ping-pong buffer while the DMA fills the other buffer. Since a page program takes about 0.7 ms and we get a new 2048-byte buffer every 128 ms (1024 samples at 8 kHz), there is plenty of time.
 
