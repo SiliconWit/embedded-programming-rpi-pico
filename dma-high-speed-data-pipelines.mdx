@@ -1022,6 +1022,10 @@ Here is the step-by-step flow of the DMA chain during a recording session:
 
 The critical timing constraint: the CPU must finish processing one buffer before the other buffer fills. At 8 kHz with 1024-sample buffers, each buffer takes 128 ms to fill. The flash writes take roughly 6 ms (eight pages at 0.7 ms each plus overhead). This leaves over 120 ms of margin, which is more than enough even if the CPU handles additional tasks.
 
+:::tip[Instrument it]
+This is exactly the machinery a real vibration monitor needs. Bearing and gear faults live in the kilohertz range, and catching them means sampling an accelerometer fast and continuously without dropping a window, which is what DMA ping-pong buffering gives you: one buffer fills from the ADC while the other is processed or flushed to flash. Stream an ADXL1002 or a digital accelerometer through this pipeline, run an FFT, and a [Pico](/education/sensor-actuator-interfacing-stm32/) becomes a condition monitor that [reports the spectrum](https://siliconwit.io) the moment a fault tone rises.
+:::
+
 ## Experiments
 
 <InArticleAd />
