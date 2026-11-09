@@ -25,7 +25,7 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingRpiPicoComments from '../../../../components/embedded-programming-rpi-pico/EmbeddedProgrammingRpiPicoComments.astro';
 
-A device that needs its own driver is a device many people cannot use. Someone must write the driver for each operating system, the user must install it, and an update can break it. USB avoids this with device classes: a device that describes itself in a standard way works with the driver every computer already has. The RP2040 has the USB hardware built in, so it needs no extra chip. In this lesson you build a USB gamepad with the TinyUSB library. A thumb joystick gives two axes, four buttons give four bits, and Windows, macOS and Linux accept it as a game controller with no driver to install. You write the description of its data by hand, byte by byte. #USB #HID #TinyUSB
+A device that needs its own driver is one many people cannot use: someone must write the driver for each operating system, the user must install it, and an update can break it. USB avoids this with device classes: a device that describes itself in a standard way works with the driver every computer already has. The RP2040 has the USB hardware built in, so it needs no extra chip. In this lesson you build a USB gamepad with the TinyUSB library. A thumb joystick gives two axes, four buttons give four bits, and Windows, macOS and Linux accept it as a game controller with no driver to install. You write the description of its data by hand, byte by byte. #USB #HID #TinyUSB
 
 ## What We Are Building
 
@@ -60,7 +60,7 @@ A USB gamepad built on the Pico. It belongs to the HID class (Human Interface De
 <InArticleAd />
 
 
-When you plug in a USB device, the computer knows nothing about it. USB calls the computer the host. The host cannot guess whether the new device is a mouse, a printer or a gamepad, so it asks, and the device answers with descriptors. A descriptor is a small block of bytes in a fixed format in which the device states what it is and how to talk to it. From these answers the host chooses a driver. This exchange at plug-in is called enumeration.
+When you plug in a USB device, the computer (USB calls it the host) knows nothing about it and cannot guess whether it is a mouse, a printer or a gamepad. So it asks, and the device answers with descriptors: small blocks of bytes in a fixed format that state what the device is and how to talk to it. From the answers the host chooses a driver. This exchange at plug-in is called enumeration.
 
 ### Descriptor Hierarchy
 
@@ -99,11 +99,11 @@ A USB device never sends on its own. The host asks each endpoint in turn, and th
 | Bulk | No (uses leftover bandwidth) | Yes | Mass storage, CDC serial data |
 | Isochronous | Yes | No | Audio streaming, video |
 
-HID devices use interrupt transfers. The name misleads: the device does not interrupt the host. The host promises to ask the endpoint at a fixed interval, the `bInterval` field of the endpoint descriptor. The gamepad sets it to 8 ms, so the host asks 125 times a second, which is fast enough for a game. A block of data that a HID device sends is called a report.
+HID devices use interrupt transfers. The name misleads: the device does not interrupt the host; the host promises to ask the endpoint at a fixed interval, the `bInterval` field of the endpoint descriptor. The gamepad sets 8 ms, so the host asks 125 times a second, fast enough for a game. A block of data that a HID device sends is called a report.
 
 ### How TinyUSB Fits In
 
-TinyUSB is the USB library included in the Pico SDK. It does the protocol work: enumeration, answering descriptor requests, and the rules of each class. Your part is a set of callbacks, functions with fixed names that you write and TinyUSB calls when the host asks for something.
+TinyUSB, the USB library included in the Pico SDK, does the protocol work: enumeration, answering descriptor requests, and the rules of each class. Your part is a set of callbacks: functions with fixed names that you write and TinyUSB calls when the host asks for something.
 
 The callbacks you write are:
 
@@ -114,18 +114,18 @@ The callbacks you write are:
 - `tud_hid_report_complete_cb()`: called after a report is sent, used to schedule the next one
 - `tud_hid_set_report_cb()` and `tud_hid_get_report_cb()`: handle host requests for report data
 
-Your main loop must call `tud_task()` again and again, because TinyUSB does its work inside that call. To send gamepad data you call `tud_hid_report()`. This call only places the report in the endpoint's buffer. The host collects it when it next asks, up to 8 ms later.
+Your main loop must call `tud_task()` again and again, because TinyUSB does its work inside that call. `tud_hid_report()` sends gamepad data, but it only places the report in the endpoint's buffer; the host collects it when it next asks, up to 8 ms later.
 
 ### HID Class Overview
 
-The HID class covers devices that a person operates: keyboards, mice, joysticks, gamepads, knobs and sliders. Its strength is one extra descriptor, the HID report descriptor, in which the device states what each bit and byte of its reports means. The operating system reads it and builds the input handler by itself. This is why a HID device needs no driver of its own.
+The HID class covers devices that a person operates: keyboards, mice, joysticks, gamepads, knobs and sliders. Its strength is one extra descriptor, the HID report descriptor, which states what each bit and byte of a report means. The operating system reads it and builds the input handler itself, which is why a HID device needs no driver of its own.
 
 ## HID Report Descriptor
 
 <InArticleAd />
 
 
-The gamepad sends 3 bytes every 8 ms. Without help, the host sees only three numbers. The report descriptor is the key to them: it says which bits are buttons, which bytes are axes, and what range each value has.
+The gamepad sends 3 bytes every 8 ms, which alone are only three numbers to the host. The report descriptor is their key: it says which bits are buttons, which bytes are axes, and what range each value has.
 
 ```text
  One report: 3 bytes
@@ -246,7 +246,7 @@ TinyUSB supports many classes, and each one costs memory. This header says which
 
 ### usb_descriptors.c
 
-This file holds every descriptor and the callbacks that hand them to TinyUSB. It is the longest file in the project, and it follows the four levels above: device, configuration with its interfaces and endpoints, then the strings.
+This file, the longest in the project, holds every descriptor and the callbacks that hand them to TinyUSB. It follows the four levels above: device, configuration with its interfaces and endpoints, then the strings.
 
 ```c
 #include "tusb.h"
@@ -682,13 +682,13 @@ int main(void)
 
 ### How the Firmware Works
 
-Reading the stick. `adc_read_channel()` selects an input and makes one 12-bit conversion, a number from 0 to 4095. The report needs a signed number from -127 to 127 with 0 at rest, so `adc_to_axis()` does three things: it subtracts the midpoint 2048, applies a dead zone, and scales the result. With numbers, a reading of 3072 gives $3072 - 2048 = 1024$, and $1024 \times 127 / 2048 = 63$, half of full travel.
+Reading the stick. `adc_read_channel()` selects an input and makes one 12-bit conversion, 0 to 4095. The report needs a signed number from -127 to 127 with 0 at rest, so `adc_to_axis()` subtracts the midpoint 2048, applies a dead zone, and scales: a reading of 3072 gives $3072 - 2048 = 1024$, and $1024 \times 127 / 2048 = 63$, half of full travel.
 
-The dead zone. A joystick does not rest exactly at the electrical midpoint, and its reading moves a little by itself. Without a dead zone the gamepad would report small movements when nobody touches it. Every reading closer than 100 counts to the midpoint becomes 0. That is $100 / 2048$, about the inner 5% of the travel.
+The dead zone. A joystick does not rest exactly at the electrical midpoint, and its reading moves a little by itself, so without a dead zone the gamepad would report small movements when nobody touches it. Every reading closer than 100 counts to the midpoint becomes 0: $100 / 2048$, about the inner 5% of the travel.
 
-Reading the buttons. A pressed button connects its pin to GND, so `gpio_get()` returns 0. `buttons_read()` turns this over and packs the four states into the lower 4 bits of one byte, as the report descriptor promises.
+Reading the buttons. A pressed button connects its pin to GND, so `gpio_get()` returns 0. `buttons_read()` inverts this and packs the four states into the lower 4 bits of one byte, as the report descriptor promises.
 
-Sending the report. `send_gamepad_report()` reads all inputs and calls `tud_hid_report()` if the data changed or the previous report has gone. TinyUSB calls `tud_hid_report_complete_cb()` when the host has collected a report. The callback sets `report_pending = true`, and the main loop then prepares the next report. So the host receives a fresh report each time it asks.
+Sending the report. `send_gamepad_report()` reads all inputs and calls `tud_hid_report()` if the data changed or the previous report has gone. When the host has collected a report, TinyUSB calls `tud_hid_report_complete_cb()`, which sets `report_pending = true`, and the main loop prepares the next one. So the host receives a fresh report each time it asks.
 
 Debug text. `cdc_debug_print()` writes the present report as text to the serial port every 250 ms, much slower than the HID reports. Open a serial terminal (PuTTY, minicom, or the Arduino serial monitor) to see the button and axis values.
 
@@ -903,13 +903,13 @@ Once the firmware is flashed, verify that the gamepad works on your operating sy
 <InArticleAd />
 
 
-1. **Add a hat switch (D-pad).** Wire four more buttons and add a Hat Switch usage to the HID report descriptor. A hat switch reports a direction value (0 to 7 for the eight compass directions, or 0x0F for centered). Modify the report struct to include a `uint8_t hat` field. This requires changing the report descriptor to include `Usage (Hat Switch)` with logical min 0, max 7, and a null state for centered.
+1. **Add a hat switch (D-pad).** Wire four more buttons and add a `uint8_t hat` field to the report struct. A hat switch reports a direction: 0 to 7 for the eight compass directions, or 0x0F for centered. In the report descriptor add `Usage (Hat Switch)` with logical min 0, max 7, and a null state for centered.
 
-2. **Add more analog axes.** Connect a second joystick module to GP28 (ADC2) and use the joystick button pin as ADC input for a third axis, giving you Rx and Ry (rotation axes). Update the HID report descriptor with Usage 0x33 (Rx) and 0x34 (Ry). This turns the gamepad into a dual-stick controller.
+2. **Add more analog axes.** Connect a second joystick module to GP28 (ADC2), and use the joystick button pin as ADC input for a third axis, for Rx and Ry (rotation axes). Add Usage 0x33 (Rx) and 0x34 (Ry) to the HID report descriptor: the gamepad becomes a dual-stick controller.
 
 3. **Add force feedback output.** Connect a small vibration motor through a transistor to a PWM-capable GPIO. Add an Output report to the HID descriptor with a usage from the Physical Interface Device (PID) usage page. Implement `tud_hid_set_report_cb()` to read the host's rumble commands and drive the motor PWM accordingly.
 
-4. **Implement button debouncing.** The current firmware reads buttons directly with no debounce filtering. Add a software debounce routine that requires a button to be in the same state for three consecutive reads (at 1 ms intervals) before registering a change. Compare the button behavior before and after, especially with cheap tactile switches that bounce significantly.
+4. **Implement button debouncing.** The firmware reads the buttons with no debounce filter. Accept a change only after a button has kept the same state for three consecutive reads at 1 ms intervals, and compare the behaviour before and after, especially with cheap tactile switches that bounce a lot.
 
 ## Summary
 

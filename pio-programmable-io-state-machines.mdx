@@ -60,11 +60,11 @@ A PIO program that drives a strip of 8 WS2812B LEDs. Your C code decides the col
 <InArticleAd />
 
 
-Many devices expect a signal whose timing is exact: WS2812B LEDs, audio converters, displays, serial links at unusual speeds. The usual way to make such a signal without special hardware is to switch the pin from code and count the time in a loop (this is called bit-banging). It has two costs. The CPU can do nothing else during the transfer, and any interrupt stretches a pulse.
+Many devices expect a signal whose timing is exact: WS2812B LEDs, audio converters, displays, serial links at unusual speeds. Without special hardware you switch the pin from code and count the time in a loop (bit-banging). That has two costs: the CPU can do nothing else during the transfer, and any interrupt stretches a pulse.
 
-PIO removes both. The RP2040 has two PIO blocks (PIO0 and PIO1), each with four state machines. A state machine is a very small processor that can do little more than move pins and shift bits. It runs a program of at most 32 instructions, one instruction in each clock cycle, and nothing interrupts it. You write the short program, start the state machine, and the CPU is free.
+PIO removes both. The RP2040 has two PIO blocks (PIO0 and PIO1), each with four state machines. A state machine is a very small processor that can do little more than move pins and shift bits, like a worker with a short instruction card: it runs a program of at most 32 instructions, one per clock cycle, and nothing interrupts it. You write the program, start the state machine, and the CPU is free.
 
-The CPU and the state machine work at different speeds, so they exchange data through a FIFO (first in, first out): a queue, like people waiting at a counter. The CPU puts 32-bit words in at one end when it has time. The state machine takes them from the other end when it needs them. If the queue is full, the CPU waits. If it is empty, the state machine waits.
+The CPU and the state machine work at different speeds, so they exchange 32-bit words through a FIFO (first in, first out), a queue like people waiting at a counter. The CPU puts words in when it has time; the state machine takes them when it needs them. A full queue makes the CPU wait, an empty one the state machine.
 
 ```text
         CPU writes                          CPU reads
@@ -81,7 +81,7 @@ The CPU and the state machine work at different speeds, so they exchange data th
         output pins                         input pins
 ```
 
-The drawing shows the two paths through one state machine. Each state machine has these parts:
+The drawing shows the two paths through one state machine, which has these parts:
 
 | Resource | Description |
 |----------|-------------|
@@ -97,7 +97,7 @@ The drawing shows the two paths through one state machine. Each state machine ha
 <InArticleAd />
 
 
-Exact timing is possible because the language is so small. PIO assembly has nine instructions, and every one takes exactly one clock cycle (unless it waits for a condition). So you can count the length of a pulse by counting instructions. The program of this lesson uses only `out`, `jmp` and `nop` (do nothing, which the assembler writes as a `mov`). Read the table to know what else exists.
+Exact timing is possible because the language is so small: PIO assembly has nine instructions, each taking exactly one clock cycle (unless it waits for a condition), so you measure a pulse by counting instructions. This lesson's program uses only `out`, `jmp` and `nop` (do nothing, which the assembler writes as a `mov`); the table shows what else exists.
 
 | Instruction | Description |
 |-------------|-------------|
@@ -113,22 +113,22 @@ Exact timing is possible because the language is so small. PIO assembly has nine
 
 ### Sideset
 
-If setting a pin needed its own instruction, every change of the pin would cost one cycle, and the timing would depend on the path through the program. Sideset avoids this. Any instruction can also set one or more "sideset" pins, in the same cycle and at no cost: you write `side 1` or `side 0` after the instruction.
+If setting a pin needed its own instruction, every pin change would cost a cycle, and the timing would depend on the path through the program. With sideset, any instruction can also set one or more "sideset" pins in the same cycle at no cost: write `side 1` or `side 0` after it.
 
-In the WS2812B program the data pin is a sideset pin. The instruction that tests a bit also sets the pin in that same cycle.
+In the WS2812B program the data pin is a sideset pin, so the instruction that tests a bit also sets the pin in that same cycle.
 
 ### Autopush and Autopull
 
-Normally a program needs a `pull` instruction to fetch the next word from the TX FIFO into the OSR (and a `push` for the other direction). That costs one cycle, which would make one bit in every 24 longer than the others. With autopull the hardware fetches the next word by itself, with no cycle used, as soon as a set number of bits (the threshold) has left the OSR.
+Normally a `pull` instruction fetches the next word from the TX FIFO into the OSR (and a `push` goes the other way). That costs a cycle and would make one bit in every 24 longer than the others. With autopull the hardware fetches the next word itself, with no cycle used, as soon as a set number of bits (the threshold) has left the OSR.
 
-For WS2812B the threshold is 24 bits, the data of one LED. The program has no `pull` instruction at all.
+For WS2812B the threshold is 24 bits, the data of one LED, and the program has no `pull` instruction at all.
 
 ## Clock Divider
 
 <InArticleAd />
 
 
-One instruction takes one cycle, so the length of a cycle sets every time in the signal. At the full 125 MHz a cycle is 8 ns, far too short for this strip. Each state machine therefore has a clock divider with a 16-bit whole part (`int`) and an 8-bit fraction (`frac`). The clock of the state machine, `f_sm`, is the system clock `f_sys` divided by it:
+One instruction takes one cycle, so the cycle length sets every time in the signal. At the full 125 MHz a cycle is 8 ns, far too short for this strip, so each state machine has a clock divider with a 16-bit whole part (`int`) and an 8-bit fraction (`frac`). The state machine clock `f_sm` is the system clock `f_sys` divided by it:
 
 ```
 f_sm = f_sys / (int + frac/256)
@@ -176,7 +176,7 @@ Each LED takes 24 bits: 8 for green, 8 for red, 8 for blue, in that order (GRB),
 <InArticleAd />
 
 
-This is the WS2812 program that Raspberry Pi publishes with the SDK examples: four instructions, with the data pin driven by sideset. Two things to know before you read it. The number in square brackets is a delay: the instruction takes its one cycle and then waits that many cycles more, so `[T3 - 1]` makes it last T3 cycles. And `side 0` or `side 1` sets the pin at the start of the instruction.
+This is the WS2812 program Raspberry Pi publishes with the SDK examples: four instructions, the data pin driven by sideset. Two notes before you read it. The number in square brackets is a delay: the instruction takes its one cycle and then waits that many more, so `[T3 - 1]` makes it last T3 cycles. And `side 0` or `side 1` sets the pin at the start of the instruction.
 
 ```pio title="ws2812.pio"
 ;
@@ -213,7 +213,7 @@ One bit takes T1 + T2 + T3 = 2 + 5 + 3 = 10 cycles of 125 ns. Seen from the risi
  bit 0    ┘     └────────────────────────
 ```
 
-So a 1 is high for 7 cycles (875 ns) and a 0 for 2 cycles (250 ns). These are not the centre values of the table, but they are inside its limits.
+So a 1 is high for 7 cycles (875 ns) and a 0 for 2 cycles (250 ns). These are not the centre values of the table, but they are inside its limits. The 0 sits exactly at the edge of two of them: high 250 ns (the limit is 250 to 550 ns) and low 8 cycles, 1000 ns (the limit is 700 to 1000 ns).
 
 The program text starts at the low part, T3, because that is when the next bit is fetched. Follow each path:
 
@@ -525,7 +525,7 @@ sleep_ms(500);
 <InArticleAd />
 
 
-A C compiler cannot read a `.pio` file. The build for a PIO project therefore has one extra step: `pico_generate_pio_header()` runs the PIO assembler on your `.pio` file and writes a C header that holds the program as an array of numbers.
+A C compiler cannot read a `.pio` file, so a PIO build has one extra step: `pico_generate_pio_header()` runs the PIO assembler on it and writes a C header holding the program as an array of numbers.
 
 <FileTree>
 - ws2812-pio/
@@ -608,9 +608,9 @@ Connect the WS2812B strip to the Pico as follows:
 | VCC (5V) | VBUS (5V USB) or external 5V supply |
 | GND | GND (shared ground with Pico) |
 
-The 330 ohm series resistor on the data line protects the first LED's input from voltage spikes. For strips longer than 8 LEDs, use an external 5V supply rated for the total current (each WS2812B draws up to 60 mA at full white). Always connect the external supply ground to the Pico ground.
+The 330 ohm series resistor protects the first LED's data input from voltage spikes. For more than 8 LEDs, use an external 5V supply rated for the total current (each WS2812B draws up to 60 mA at full white). Always connect the external supply ground to the Pico ground.
 
-The RP2040 outputs 3.3V logic levels. WS2812B LEDs are specified for 5V logic, but they reliably accept 3.3V signals when powered at 5V. The datasheet minimum input high voltage is $0.7 \times V_{DD} = 3.5\ \text{V}$, but in practice 3.3V works consistently with nearly all WS2812B strips.
+The RP2040 outputs 3.3V logic, and WS2812B LEDs are specified for 5V logic: the datasheet minimum input high voltage is $0.7 \times V_{DD} = 3.5\ \text{V}$. In practice, powered at 5V, nearly all WS2812B strips accept 3.3V reliably.
 
 ## Exercises
 
@@ -623,15 +623,15 @@ Change T1 to 3, T2 to 3 and T3 to 4 in the `.pio` file (still 10 cycles in total
 </Card>
 
 <Card title="Exercise 2: Two Independent Strips" icon="pencil">
-Add a second WS2812B strip on GP3. Use a second state machine (sm1) on the same PIO block to drive it independently. Write different animation patterns to each strip simultaneously. Verify that both strips update at the same frame rate without interfering with each other.
+Add a second WS2812B strip on GP3, driven by a second state machine (sm1) on the same PIO block. Send a different animation to each strip at the same time, and check that both update at the same frame rate without disturbing each other.
 </Card>
 
 <Card title="Exercise 3: Serial Color Control" icon="pencil">
-Add USB serial input so the user can type a hex color code (for example, `FF0000` for red) and the entire strip changes to that color. Parse the 6-character hex string into R, G, B bytes using `sscanf()` or manual nibble conversion. Print the received color back to confirm.
+Add USB serial input: the user types a hex color code (for example `FF0000` for red) and the whole strip takes that color. Parse the 6-character string into R, G, B bytes with `sscanf()` or by hand, and print the color back to confirm.
 </Card>
 
 <Card title="Exercise 4: Pixel Addressable Commands" icon="pencil">
-Extend Exercise 3 so the user can set individual pixels. Accept commands in the format `P3 00FF00` (set pixel 3 to green). Maintain an array of pixel colors in memory and update only the addressed pixel. After each command, push the entire pixel array to the PIO FIFO to refresh the strip.
+Extend Exercise 3 to set single pixels with commands such as `P3 00FF00` (pixel 3 to green). Keep an array of pixel colors in memory, change only the addressed pixel, and after each command push the whole array to the PIO FIFO to refresh the strip.
 </Card>
 </CardGrid>
 

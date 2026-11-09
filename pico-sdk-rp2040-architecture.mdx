@@ -30,7 +30,7 @@ A new microcontroller board does nothing until you can put your own program on i
 ## What We Are Building
 
 <Card title="USB Text Injector" icon="star">
-A Raspberry Pi Pico that a computer sees as a USB keyboard. USB calls this kind of device HID (human interface device), and every computer already has the driver for it. When you plug the Pico in, it waits one second, then types a fixed text one character at a time. You load the program by copying one file onto the Pico, with no extra tool.
+A Raspberry Pi Pico that a computer sees as a USB keyboard: a HID (human interface device), for which every computer already has the driver. When plugged in, it waits one second, then types a fixed text one character at a time. You load the program by copying one file onto the Pico, with no extra tool.
 </Card>
 
 **Project specifications:**
@@ -145,7 +145,7 @@ cmake --version
 <InArticleAd />
 
 
-The RP2040 is the microcontroller on the Pico. You can use it without knowing its parts, but three questions come up in every project, and the parts answer them: why can two things run at once, where does the program live, and why can a bad program never lock you out of the board? The drawing shows the parts. The flash memory is a separate chip on the board; everything else is inside the RP2040.
+The RP2040 is the microcontroller on the Pico. Its parts answer three questions that come up in every project: why can two things run at once, where does the program live, and why can a bad program never lock you out of the board? In the drawing, the flash memory is a separate chip on the board; everything else is inside the RP2040.
 
 ```text
  ┌────────────┐          ┌────────────┐
@@ -164,37 +164,37 @@ The RP2040 is the microcontroller on the Pico. You can use it without knowing it
 
 ### Dual Cortex-M0+ Cores
 
-A core is a processor: the part that runs your instructions. The RP2040 has two ARM Cortex-M0+ cores, each running at up to 133 MHz, so two pieces of code can run at the same moment. Your program starts on core 0. Core 1 sleeps until your code starts it with the SDK function `multicore_launch_core1()`.
+A core is a processor: the part that runs your instructions. The RP2040 has two ARM Cortex-M0+ cores at up to 133 MHz each, so two pieces of code can run at the same moment. Your program starts on core 0; core 1 sleeps until your code calls the SDK function `multicore_launch_core1()`.
 
-Both cores see the same memory and the same peripherals (the built-in hardware blocks such as USB, timers and the ADC). Each core has its own stack, the memory where a running function keeps its local data.
+Both cores see the same memory and peripherals (the built-in hardware blocks such as USB, timers and the ADC). Each has its own stack, the memory where a running function keeps its local data.
 
-The Cortex-M0+ is a small core with no floating-point unit. Arithmetic with `float` values is done by software routines, which is much slower than integer arithmetic.
+The Cortex-M0+ has no floating-point unit, so `float` arithmetic runs as software routines, much slower than integer arithmetic.
 
 ### Memory: 264 KB SRAM in 6 Banks
 
-SRAM is the working memory: your variables live there, and it is empty at every power-up. Two cores that share one memory block would often have to wait for each other. So the 264 KB is built as six separate banks: four of 64 KB and two of 4 KB.
+SRAM is the working memory: your variables live there, and it is empty at every power-up. Two cores sharing one memory block would often wait for each other, so the 264 KB is six separate banks: four of 64 KB and two of 4 KB.
 
-In the region that programs normally use (0x20000000 to 0x2003FFFF), the four large banks are striped: each 32-bit word goes to the next bank in turn. Two cores that read memory in the same clock cycle then usually reach different banks, and neither waits. The two 4 KB banks are often used for the stacks of core 0 and core 1.
+In the region programs normally use (0x20000000 to 0x2003FFFF), the four large banks are striped: each 32-bit word goes to the next bank in turn, so two cores reading in the same clock cycle usually reach different banks and neither waits. The two 4 KB banks often hold the stacks of core 0 and core 1.
 
 ### Bus Fabric (AHB-Lite Crossbar)
 
-The bus fabric carries every read and write between the parts that ask (the two cores and the DMA controller, which copies data without the processor) and the parts that answer (the SRAM banks, the flash and the peripherals). AHB-Lite is the name of the ARM bus standard it uses.
+The bus fabric carries every read and write between the parts that ask (the two cores, and the DMA controller, which copies data without the processor) and the parts that answer (the SRAM banks, the flash and the peripherals). AHB-Lite is the ARM bus standard it uses.
 
-It works like a telephone exchange: any caller can reach any line, and calls to different lines run at the same time. Core 0 can read SRAM bank 0 while core 1 writes SRAM bank 2 and DMA moves a sample into bank 1, all in one clock cycle. Only when two ask for the same part in the same cycle does one wait for the other.
+It works like a telephone exchange: any caller reaches any line, and calls to different lines run at the same time. Core 0 can read SRAM bank 0 while core 1 writes bank 2 and DMA writes bank 1, all in one clock cycle. Only two requests for the same part in the same cycle make one of them wait.
 
 ### Boot Process
 
-Boot is what the chip does between power-up and the first line of your `main()`. The order matters, because the first stage is the reason a Pico cannot be locked by a bad program.
+Boot is what the chip does between power-up and the first line of your `main()`. Its first stage is the reason a bad program cannot lock a Pico.
 
 <Steps>
-1. **ROM bootloader (inside the chip).** The RP2040 has 16 KB of mask ROM at address 0x00000000: memory whose contents were fixed when the chip was made, and that no program can change. The chip always starts here. The ROM code looks for a valid program in the flash chip. If you hold the BOOTSEL button during power-up, or the flash holds no valid program, the ROM presents the Pico to the computer as a USB drive that accepts a UF2 file.
+1. **ROM bootloader (inside the chip).** The RP2040 has 16 KB of mask ROM at address 0x00000000: memory fixed when the chip was made, which no program can change. The chip always starts here, and the ROM looks for a valid program in the flash chip. If BOOTSEL is held during power-up, or the flash holds no valid program, the ROM presents the Pico to the computer as a USB drive that accepts a UF2 file.
 
 2. **Second-stage boot (in flash).** The first 256 bytes of the flash hold a small program that the SDK adds for you. It sets the flash chip up for XIP (execute in place): the processor runs code directly from flash and does not copy it to SRAM first.
 
 3. **Your application.** The processor reads the vector table (the list of start addresses at the beginning of your program), runs the start-up code of the SDK, and then calls your `main()`.
 </Steps>
 
-UF2 (USB Flashing Format) is the file format that makes loading by copy possible. A `.uf2` file is your program cut into blocks, each marked with the flash address where it belongs. The ROM writes each block to that address and restarts the chip.
+UF2 (USB Flashing Format) makes loading by copy possible. A `.uf2` file is your program cut into blocks, each marked with the flash address where it belongs; the ROM writes each block there and restarts the chip. It is like parcels that each carry their own delivery address.
 
 ## Project Structure
 
@@ -213,7 +213,7 @@ Create a project directory with the following layout:
   - build/
 </FileTree>
 
-The `pico_sdk_import.cmake` file is a helper script that locates the Pico SDK using the `PICO_SDK_PATH` environment variable. Copy it from the SDK:
+The helper script `pico_sdk_import.cmake` finds the Pico SDK through the `PICO_SDK_PATH` environment variable. Copy it from the SDK:
 
 ```bash
 cp $PICO_SDK_PATH/external/pico_sdk_import.cmake .
@@ -224,7 +224,7 @@ cp $PICO_SDK_PATH/external/pico_sdk_import.cmake .
 <InArticleAd />
 
 
-A Pico program is built from your files and from hundreds of SDK files, each with its own compiler options. Nobody types those commands by hand. CMake reads one file, `CMakeLists.txt`, and writes the build instructions; `make` then runs the compiler. In `CMakeLists.txt` you name your project, your source files and the SDK libraries you use. TinyUSB is the USB library that comes with the SDK. This is the smallest file for a TinyUSB keyboard:
+A Pico program is built from your files and hundreds of SDK files, each with its own compiler options, so nobody types the commands by hand. CMake reads `CMakeLists.txt`, which names your project, your source files and the SDK libraries you use, and writes the build instructions; `make` then runs the compiler. TinyUSB is the USB library that comes with the SDK. This is the smallest file for a TinyUSB keyboard:
 
 ```cmake
 cmake_minimum_required(VERSION 3.13)
@@ -270,7 +270,7 @@ Key points about this file:
 <InArticleAd />
 
 
-To flash a board is to write a program into its flash memory. On the Pico you do it by copying a file, and the ROM bootloader does the writing:
+To flash a board is to write a program into its flash memory. On the Pico you copy a file, and the ROM bootloader does the writing:
 
 ```text
  ┌──────────┐ hold BOOTSEL ┌──────────┐ copy  ┌──────────┐
@@ -297,7 +297,7 @@ To flash a board is to write a program into its flash memory. On the Pico you do
 On Linux, the drive usually mounts under `/media/$USER/RPI-RP2`. On macOS it appears on the desktop and in `/Volumes/RPI-RP2`. On Windows it appears as a new drive letter in File Explorer.
 
 :::tip
-Because the bootloader is in ROM, this method works even after a program that stops at once: hold BOOTSEL, plug in, and load a new one. A debug probe on the SWD (Serial Wire Debug) pins can also flash the board without unplugging it.
+Because the bootloader is in ROM, this works even after a program that stops at once: hold BOOTSEL, plug in, and load a new one. A debug probe on the SWD (Serial Wire Debug) pins can also flash the board without unplugging it.
 :::
 
 ## TinyUSB HID Keyboard Configuration
@@ -305,11 +305,11 @@ Because the bootloader is in ROM, this method works even after a program that st
 <InArticleAd />
 
 
-When a USB device is plugged in, the computer asks it: what are you? The device answers with descriptors, small blocks of data in a fixed format. This exchange is called enumeration. If the answer says "keyboard", the computer loads its keyboard driver and nothing needs to be installed. Two files hold the answers: `tusb_config.h` and `usb_descriptors.c`.
+When a USB device is plugged in, the computer asks it what it is, and the device answers with descriptors: small blocks of data in a fixed format. This exchange is called enumeration. If the answer says "keyboard", the computer loads its own keyboard driver, and nothing needs to be installed. Two files hold the answers: `tusb_config.h` and `usb_descriptors.c`.
 
 ### tusb_config.h
 
-This header tells TinyUSB which device classes to build. Only HID is switched on (1); serial port (CDC), storage (MSC), MIDI and vendor are off (0).
+This header tells TinyUSB which device classes to build: only HID is on (1); serial port (CDC), storage (MSC), MIDI and vendor are off (0).
 
 ```c
 #ifndef TUSB_CONFIG_H
@@ -430,7 +430,7 @@ const uint16_t *tud_descriptor_string_cb(uint8_t index, uint16_t langid)
 <InArticleAd />
 
 
-A USB keyboard does not send letters. It sends reports that say which keys are down now, and each key has a number, its keycode. To type one character the firmware sends a report with that keycode (key down) and then an empty report (key up). The firmware waits for enumeration, waits one more second so the computer finishes loading its driver, and then types the message.
+A USB keyboard does not send letters. It sends reports of which keys are down now, each key named by a number, its keycode. To type one character the firmware sends a report with that keycode (key down), then an empty report (key up). It waits for enumeration and one more second for the computer to load its driver, then types the message.
 
 ```c
 #include <stdlib.h>
@@ -572,9 +572,9 @@ int main(void)
 2. `tusb_init()` starts TinyUSB, and enumeration begins.
 3. The loop calls `tud_task()` until `tud_mounted()` returns true: the computer has accepted the keyboard. `tud_task()` is the function in which TinyUSB does all its work, so the program must call it again and again.
 4. After one second, `type_string()` takes each character of the message. `char_to_keycode()` finds its keycode (and Shift if needed), and `send_key()` sends the key-down report and then the key-up report.
-5. After the message, the firmware keeps calling `tud_task()` without end, so the computer does not report that the keyboard was removed.
+5. After the message, the firmware keeps calling `tud_task()`, so the computer does not report the keyboard as removed.
 
-One character takes 15 ms down, 15 ms up and a 50 ms pause: 80 ms, or about 12 characters per second. These waits use `usb_delay_ms()`, which keeps calling `tud_task()` while it waits. With a plain `sleep_ms()` TinyUSB would not run between reports, it would refuse the next report as busy, and the key-up report would never be sent. With much shorter waits, some operating systems lose keys.
+One character takes 15 ms down, 15 ms up and a 50 ms pause: 80 ms, or 12.5 characters per second. The waits use `usb_delay_ms()`, which keeps calling `tud_task()`. With a plain `sleep_ms()` TinyUSB would not run between reports and would refuse the next report as busy, so the key-up report would never be sent. With much shorter waits, some operating systems lose keys.
 
 ## Building and Flashing
 

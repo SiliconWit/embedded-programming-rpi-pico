@@ -59,11 +59,11 @@ The LED brightness controller, written again in MicroPython and extended with a 
 <InArticleAd />
 
 
-A C program is translated on your PC into instructions for the processor, and only those instructions go to the board. MicroPython works the other way round: a program that understands Python is flashed to the board once, and after that you send it Python text. This program is called the interpreter. It is a small version of Python 3 made for microcontrollers. With its compiler and a part of the Python standard library it needs about 256 KB of flash and can run in 16 KB of RAM.
+A C program is translated on your PC into instructions for the processor, and only those go to the board, like a book translated before it is sold. MicroPython works the other way round, like a live interpreter: a program that understands Python, the interpreter, is flashed to the board once, and after that you send it Python text. It is a small Python 3 for microcontrollers; with its compiler and part of the standard library it needs about 256 KB of flash and can run in 16 KB of RAM.
 
-The RP2040 version has two modules for the hardware. The `machine` module has classes for `Pin`, `PWM`, `ADC`, `I2C`, `SPI`, and `Timer`. The `rp2` module gives PIO through the `StateMachine` class and the `@rp2.asm_pio` decorator. Both reach the same hardware registers that the C SDK uses.
+The RP2040 version has two hardware modules: `machine`, with classes for `Pin`, `PWM`, `ADC`, `I2C`, `SPI` and `Timer`, and `rp2`, which gives PIO through the `StateMachine` class and the `@rp2.asm_pio` decorator. Both reach the same hardware registers as the C SDK.
 
-You trade running speed for working speed. A MicroPython loop that reads an ADC and sets a PWM duty cycle runs roughly 10 to 100 times slower than the same loop in C. For a display of sensor readings, a settings menu, a test rig or a first trial of a protocol, this does not matter, and the time you save while you develop is worth more.
+You trade running speed for working speed: a MicroPython loop that reads an ADC and sets a PWM duty cycle runs roughly 10 to 100 times slower than the same loop in C. For a display of sensor readings, a settings menu, a test rig or a first trial of a protocol this does not matter, and the development time you save is worth more.
 
 ### How It Works Internally
 
@@ -88,20 +88,20 @@ The slowness has a clear cause: between your text and the hardware there are mor
 4. When you use `machine.Pin`, `machine.ADC` and so on, the VM calls drivers written in C, which use the same RP2040 registers as the Pico SDK.
 </Steps>
 
-The compiler runs on the microcontroller and not on your PC. This is why MicroPython needs more flash and RAM than a C program, and also why you have no toolchain to install.
+The compiler runs on the microcontroller, not on your PC: this is why MicroPython needs more flash and RAM than a C program, and why you have no toolchain to install.
 
 ## Flashing MicroPython Firmware
 
 <InArticleAd />
 
 
-You install the interpreter once, as a UF2 file (USB Flashing Format), the same kind of file your C builds produce. The MicroPython project offers ready UF2 files for the Raspberry Pi Pico.
+You install the interpreter once, as a UF2 file (USB Flashing Format), the same kind of file your C builds produce; the MicroPython project offers ready UF2 files for the Raspberry Pi Pico.
 
 <Steps>
 1. Download the latest MicroPython UF2 file from [micropython.org/download/RPI_PICO](https://micropython.org/download/RPI_PICO). Look for the "Releases" section and pick the latest stable `.uf2` file.
 2. Hold the **BOOTSEL** button on the Pico, then connect the USB cable to your computer. The Pico appears as a USB mass storage device named `RPI-RP2`.
 3. Drag and drop the `.uf2` file onto the `RPI-RP2` drive. The Pico will reboot automatically.
-4. The Pico now runs MicroPython. It no longer appears as a drive. It appears as a serial port over USB.
+4. The Pico now runs MicroPython and appears as a serial port over USB, no longer as a drive.
 </Steps>
 
 ### Verifying the Installation
@@ -199,7 +199,7 @@ gpio_pull_up(14);
 bool state = gpio_get(14);
 ```
 
-The Python version is shorter because one call to `Pin(...)` does the initialization, the direction and the pull-up. C needs a call for each.
+The Python version is shorter because one `Pin(...)` call does the initialization, the direction and the pull-up, where C needs a call for each.
 
 ### PWM
 
@@ -215,7 +215,7 @@ pwm.duty_u16(0)          # Turn off
 pwm.deinit()             # Release the PWM hardware
 ```
 
-In MicroPython the duty cycle is always a 16-bit value: 0 is always off and 65535 is always on, whatever the PWM frequency. MicroPython works out the wrap value and the level for you. In C you choose the wrap value and write the level yourself.
+In MicroPython the duty cycle is always a 16-bit value, 0 always off and 65535 always on, whatever the PWM frequency: MicroPython works out the wrap value and the level for you. In C you choose the wrap value and write the level yourself.
 
 ### ADC
 
@@ -233,7 +233,7 @@ raw_temp = temp_sensor.read_u16()
 ```
 
 :::note
-`read_u16()` returns a 16-bit value (0 to 65535), although the RP2040 ADC has 12 bits. MicroPython stretches the reading to the 16-bit range, so that the same code works on boards with other converters. The reading is not more exact for it. To get the 12-bit value back, shift right by 4: `raw_12bit = raw >> 4`. To get the voltage: `voltage = raw * 3.3 / 65535`. A reading of 32768 is 1.65 V.
+`read_u16()` returns a 16-bit value (0 to 65535), although the RP2040 ADC has 12 bits: MicroPython stretches the reading to 16 bits so that the same code works on boards with other converters, and it is no more exact for it. To get the 12-bit value back, shift right by 4: `raw_12bit = raw >> 4`. To get the voltage: `voltage = raw * 3.3 / 65535`. A reading of 32768 is 1.65 V.
 :::
 
 ## Rebuilding the LED Controller
@@ -245,7 +245,7 @@ The circuit is the one from [GPIO, PWM, and analog I/O](/education/embedded-prog
 
 ### Complete MicroPython Script
 
-The script does two things in a loop. It copies the potentiometer reading to the PWM duty cycle. It also reads the temperature sensor inside the chip. One temperature reading moves up and down by a degree or more from noise, so the script prints the average of the last 10 readings, a moving average, next to the single reading.
+The script does two things in a loop: it copies the potentiometer reading to the PWM duty cycle, and it reads the temperature sensor inside the chip. One temperature reading moves by a degree or more from noise, so the script prints the average of the last 10 readings, a moving average, next to the single reading.
 
 Create a file called `main.py` on the Pico's filesystem. MicroPython runs `main.py` by itself each time it starts.
 
@@ -360,7 +360,7 @@ The C version has about 90 lines and the MicroPython version about 70. The large
 <InArticleAd />
 
 
-Python is too slow and too uneven to make a signal with microsecond timing. It does not need to: the PIO state machines are hardware, and they keep exact time once they are started, whichever language started them. In [PIO state machines](/education/embedded-programming-rpi-pico/pio-programmable-io-state-machines/) you wrote a WS2812B driver as a `.pio` file and built it with the SDK. In MicroPython you write the same PIO program inside a Python file.
+Python is too slow and too uneven to make a signal with microsecond timing, and it does not need to: the PIO state machines are hardware and keep exact time once started, whichever language started them. In [PIO state machines](/education/embedded-programming-rpi-pico/pio-programmable-io-state-machines/) you wrote a WS2812B driver as a `.pio` file built with the SDK; in MicroPython you write the same PIO program inside a Python file.
 
 ### PIO Assembly in Python
 
@@ -507,16 +507,16 @@ int main(void) {
 | ADC loop speed | ~480,000 samples/sec | ~18,000 samples/sec | ~27x faster in C |
 | Development time (this project) | ~30 minutes | ~10 minutes | 3x faster in Python |
 
-Read the ADC row as times. In C one reading takes about 2 microseconds, which is the speed of the converter itself. In MicroPython one reading takes about 56 microseconds, and nearly all of that is the virtual machine at work. Your own board will give somewhat different numbers.
+Read the ADC row as times: in C one reading takes about 2 microseconds, the speed of the converter itself; in MicroPython about 56 microseconds, nearly all of it the virtual machine at work. Your own board will give somewhat different numbers.
 
-Speed is one limit. The other is evenness. MicroPython stops from time to time to free memory that is no longer used (garbage collection), and such a stop can last a few milliseconds. A Python loop therefore cannot promise that every pass comes on time.
+Speed is one limit; evenness is the other. MicroPython stops now and then to free memory that is no longer used (garbage collection), and such a stop can last a few milliseconds, so a Python loop cannot promise that every pass comes on time.
 
 ## Writing a C Extension Module
 
 <InArticleAd />
 
 
-Often one small function needs the speed and the rest of the program does not. You can write that one function in C and build it into the MicroPython firmware. Python then calls it by name, as it calls `machine.ADC`.
+Often one small function needs the speed and the rest of the program does not. Write that function in C and build it into the MicroPython firmware; Python then calls it by name, as it calls `machine.ADC`.
 
 ### Module Structure Overview
 
@@ -589,7 +589,7 @@ Use this for fast sampling loops and signal processing. For most program logic, 
 <InArticleAd />
 
 
-MicroPython keeps a small filesystem in the part of the Pico's flash that the interpreter does not use. Your scripts, settings files and data logs live there. Two tools copy files to and from it.
+MicroPython keeps a small filesystem, for your scripts, settings files and data logs, in the part of the Pico's flash that the interpreter does not use. Two tools copy files to and from it.
 
 ### Thonny IDE
 
@@ -663,7 +663,7 @@ A typical MicroPython project on the Pico looks like this:
 <InArticleAd />
 
 
-You do not have to choose one language for a whole project. Many projects begin in MicroPython and move a part to C only when a measurement shows the need. Others stay in MicroPython for good, because they never need the speed.
+You need not choose one language for a whole project. Many projects begin in MicroPython and move a part to C only when a measurement shows the need; others never need the speed and stay in MicroPython for good.
 
 ### Decision Framework
 
@@ -682,9 +682,9 @@ A control loop that keeps a machine inside safe limits belongs on the C side: it
 
 ### Hybrid Approach
 
-With a C extension module you can mix the two: write the program in MicroPython and write in C only the functions that need it. This suits a project in which most of the code is settings, user interface or network communication, and a small part is a fast sampling loop.
+A C extension module lets you mix the two: the program in MicroPython, and in C only the functions that need it. This suits a project that is mostly settings, user interface or network communication, with a small fast sampling loop.
 
-PIO programs give the same result from both languages, because the PIO hardware runs by itself once it is started. A WS2812B driver written with `@rp2.asm_pio` makes the same pulses as the `.pio` file built with the C SDK. Python is slower only in feeding it data.
+PIO programs give the same result from both languages, because the PIO hardware runs by itself once started: a WS2812B driver written with `@rp2.asm_pio` makes the same pulses as the `.pio` file built with the C SDK. Python is slower only in feeding it data.
 
 ## Experiments
 
@@ -693,19 +693,19 @@ PIO programs give the same result from both languages, because the PIO hardware 
 
 <CardGrid>
 <Card title="Experiment 1: I2C Sensor Integration" icon="rocket">
-Connect an I2C sensor (such as a BMP280 pressure/temperature sensor or an SSD1306 OLED display) to GP4 (SDA) and GP5 (SCL). Use `machine.I2C(0, sda=Pin(4), scl=Pin(5), freq=400000)` to initialize the bus, then scan for devices with `i2c.scan()`. Write a driver class that reads sensor data and displays it alongside the potentiometer and temperature readings.
+Connect an I2C sensor (such as a BMP280 pressure/temperature sensor or an SSD1306 OLED display) to GP4 (SDA) and GP5 (SCL). Start the bus with `machine.I2C(0, sda=Pin(4), scl=Pin(5), freq=400000)` and look for devices with `i2c.scan()`. Write a driver class that reads the sensor and shows its data beside the potentiometer and temperature readings.
 </Card>
 
 <Card title="Experiment 2: Flash Data Logger" icon="rocket">
-Use MicroPython's built-in filesystem to log ADC readings to a CSV file on the Pico's flash. Open a file with `f = open("log.csv", "a")` and write timestamped readings. Add a button on GP14 that starts and stops logging. Be mindful of flash wear: buffer writes and flush periodically rather than writing every sample individually.
+Log timestamped ADC readings to a CSV file on the Pico's flash, opened with `f = open("log.csv", "a")`, and add a button on GP14 that starts and stops logging. Mind flash wear: collect readings in a buffer and write them now and then, not one sample at a time.
 </Card>
 
 <Card title="Experiment 3: Interactive REPL Menu" icon="rocket">
-Build a command-line menu system that accepts single-character commands from the REPL. For example: `f` to change the PWM frequency, `d` to set a duty cycle directly, `t` to print the temperature, `b` to run the ADC benchmark, and `q` to quit. Use `sys.stdin.read(1)` in a non-blocking fashion with `select.poll()` to check for input without halting the main loop.
+Build a menu of single-character commands at the REPL: `f` to change the PWM frequency, `d` to set a duty cycle, `t` to print the temperature, `b` to run the ADC benchmark, `q` to quit. Check for input with `sys.stdin.read(1)` and `select.poll()`, so the main loop never stops to wait.
 </Card>
 
 <Card title="Experiment 4: PIO Frequency Counter" icon="rocket">
-Write a PIO program that counts rising edges on an input pin over a fixed time window. Use one state machine to generate a gating signal (high for exactly 1 second, then trigger an IRQ) and a second state machine to count pulses during that window. This technique can measure frequencies from a few Hz up to several MHz with cycle-exact accuracy.
+Count rising edges on an input pin over a fixed window with PIO: one state machine makes a gate signal (high for exactly 1 second, then an IRQ), and a second counts pulses while the gate is open. This measures frequencies from a few Hz to several MHz with cycle-exact accuracy.
 </Card>
 </CardGrid>
 

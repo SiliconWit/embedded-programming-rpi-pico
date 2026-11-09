@@ -25,7 +25,7 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingRpiPicoComments from '../../../../components/embedded-programming-rpi-pico/EmbeddedProgrammingRpiPicoComments.astro';
 
-A processor works with two values, 0 and 1, but a knob has every position between its ends and a lamp has every brightness between off and full. A pin that can only switch on and off cannot dim an LED or read a knob. This lesson gives you the two tools that close the gap. PWM (pulse width modulation) switches a pin so fast that the average acts as an in-between value. The ADC (analog to digital converter) turns a voltage into a number. You also learn how the RP2040 lets you choose which pin does which job. The project is an LED dimmer: a knob sets the brightness, and the Pico prints the reading, the voltage and its own chip temperature. #GPIO #PWM #AnalogIO
+A processor works with 0 and 1, but a knob has every position between its ends and a lamp every brightness between off and full, so a pin that only switches on and off cannot dim an LED or read a knob. Two tools close the gap: PWM (pulse width modulation) switches a pin so fast that the average acts as an in-between value, and the ADC (analog to digital converter) turns a voltage into a number. You also learn how the RP2040 lets you choose which pin does which job. The project is an LED dimmer: a knob sets the brightness, and the Pico prints the reading, the voltage and its own chip temperature. #GPIO #PWM #AnalogIO
 
 ## What We Are Building
 
@@ -60,7 +60,7 @@ A potentiometer (a knob that gives a voltage between 0 V and 3.3 V) on an ADC in
 <InArticleAd />
 
 
-On many microcontrollers each peripheral has fixed pins: the serial port is on these two and nowhere else. If two parts of your circuit need the same pin, you must redesign the board. The RP2040 avoids most of these conflicts. Behind every GPIO (general purpose input/output) pin there is a selector switch, called a multiplexer, with one position for each peripheral that can use the pin. Only one position is active at a time, and you set it with `gpio_set_function()`.
+On many microcontrollers each peripheral has fixed pins: the serial port is on these two and nowhere else, and two parts of a circuit that need the same pin force a new board. The RP2040 avoids most of these conflicts. Behind every GPIO (general purpose input/output) pin is a selector switch, a multiplexer, with one position for each peripheral that can use the pin. Only one position is active at a time; you set it with `gpio_set_function()`.
 
 The positions are:
 
@@ -74,7 +74,7 @@ The positions are:
 | GPIO_FUNC_PIO | PIO (Programmable I/O) | Custom protocols, WS2812 LEDs |
 | GPIO_FUNC_USB | USB | VBUS detect, VBUS enable, overcurrent detect (D+/D- are dedicated pins, not GPIOs) |
 
-The choice is wide but not free. Each signal of a peripheral can appear on a few pins only, listed in the RP2040 datasheet (Section 2.19.2). For example, the data output of SPI0 (MOSI) can be on GP3, GP7 or GP19, but not on GP0. The SDK does not warn you about a pin that cannot carry the signal. The peripheral only stays silent.
+The choice is wide but not free. Each signal of a peripheral can appear on a few pins only, listed in the RP2040 datasheet (Section 2.19.2). For example, the data output of SPI0 (MOSI) can be on GP3, GP7 or GP19, but not on GP0. The SDK does not warn you about a pin that cannot carry the signal; the peripheral simply stays silent.
 
 ```c
 #include "pico/stdlib.h"
@@ -96,7 +96,7 @@ With the selector on SIO (the default), your program drives the pin with `gpio_p
 
 ### Pull-Up and Pull-Down Resistors
 
-An input pin with nothing connected reads 0 or 1 at random. A button to GND leaves the pin in this state whenever it is not pressed. A pull-up resistor (about 50K to 80K ohms, inside the chip) holds the pin at 1 until the button pulls it to 0. A pull-down holds it at 0.
+An input pin with nothing connected reads 0 or 1 at random, and a button to GND leaves it so whenever it is not pressed. A pull-up resistor (about 50K to 80K ohms, inside the chip) holds the pin at 1 until the button pulls it to 0, as a spring holds a door shut until someone pushes it. A pull-down holds it at 0.
 
 ```c
 /* Enable internal pull-up on GP14 (useful for a button to GND) */
@@ -114,7 +114,7 @@ gpio_disable_pulls(14);
 <InArticleAd />
 
 
-A digital pin gives 0 V or 3.3 V and nothing between. To dim an LED, switch the pin on and off many times a second and change the fraction of each period for which it is on. That fraction is the duty cycle. The eye sees only the average: at a duty cycle of 25% the LED gets a quarter of full power. The chip has hardware that does this switching, so your code stays free.
+A digital pin gives 0 V or 3.3 V and nothing between. To dim an LED, switch the pin on and off many times a second and vary the fraction of each period it is on: the duty cycle. The eye sees only the average, so at 25% the LED gets a quarter of full power. Hardware in the chip does the switching, so your code stays free.
 
 The RP2040 has 8 PWM blocks, called slices, numbered 0 to 7. One slice is a clock divider, a 16-bit counter and two outputs, A and B. The two outputs share the counter, so they have the same frequency, but each has its own duty cycle.
 
@@ -128,11 +128,11 @@ The RP2040 has 8 PWM blocks, called slices, numbered 0 to 7. One slice is a cloc
                                 └─────────────┘
 ```
 
-Each pin belongs to one fixed slice and output. Two pins that follow each other share a slice: GP0 is 0A, GP1 is 0B, GP2 is 1A, and so on to GP15, which is 7B. GP16 starts again at 0A. The SDK gives you both numbers: `pwm_gpio_to_slice_num(gpio)` and `pwm_gpio_to_channel(gpio)`.
+Each pin belongs to one fixed slice and output, and neighbouring pins share a slice: GP0 is 0A, GP1 is 0B, GP2 is 1A, and so on to GP15, which is 7B; GP16 starts again at 0A. The SDK gives both numbers: `pwm_gpio_to_slice_num(gpio)` and `pwm_gpio_to_channel(gpio)`.
 
 ### How the Counter Works
 
-The counter of a slice counts clock ticks from 0 up to a value you choose, called **wrap**, and then starts again at 0. So wrap sets the length of one period. The output goes high when the counter starts again, and goes low when the counter reaches a second value you choose, the **level** of that output. So level sets how long the pin stays high.
+The counter of a slice counts clock ticks from 0 up to a value you choose, **wrap**, then starts again at 0, so wrap sets the period. The output goes high when the counter restarts and low when it reaches a second value, the **level** of that output, so level sets how long the pin stays high.
 
 - Frequency: $f_{\text{PWM}} = \dfrac{f_{\text{sys}}}{\text{wrap} + 1}$, where $f_{\text{sys}}$ is the system clock in Hz. The 1 is added because the counter also passes through 0.
 - Duty cycle: $D = \dfrac{\text{level}}{\text{wrap} + 1}$, a fraction between 0 and 1.
@@ -141,7 +141,7 @@ The system clock of the Pico is 125 MHz. A wrap of 12499 gives 125,000,000 / 12,
 
 ### Clock Divider
 
-For anything slower than 1907 Hz the counter must tick more slowly. Each slice has a clock divider for this (8 integer bits and 4 fractional bits, so 1 to almost 256 in steps of 1/16). The frequency becomes:
+Below 1907 Hz the counter must tick more slowly, so each slice has a clock divider (8 integer and 4 fractional bits: 1 to almost 256 in steps of 1/16). The frequency becomes:
 
 ```
 PWM frequency = system_clock / (divider * (wrap + 1))
@@ -195,14 +195,14 @@ To change the duty cycle at runtime, call `pwm_set_chan_level()` with a new valu
 | 50 Hz (servo) | 38.15 | 65535 | 65536 steps |
 | 100 kHz | 1.0 | 1249 | 1250 steps |
 
-The last column is the price of a high frequency. The level can only be a whole number from 0 to wrap + 1, so a short period has fewer possible duty cycles. At 100 kHz there are 1250 steps of brightness. At 1 kHz there are 62500, far more than an LED needs.
+The last column is the price of a high frequency: the level is a whole number from 0 to wrap + 1, so a short period allows fewer duty cycles. At 100 kHz there are 1250 steps of brightness; at 1 kHz, 62500, far more than an LED needs.
 
 ## ADC Architecture
 
 <InArticleAd />
 
 
-An ADC measures a voltage and gives a whole number. The ADC of the RP2040 (a successive-approximation or SAR type) gives 12-bit numbers, 0 to 4095, up to 500,000 times a second. It serves 5 inputs, called channels, one at a time:
+An ADC measures a voltage and gives a whole number. The RP2040's ADC (a successive-approximation, or SAR, type) gives 12-bit numbers, 0 to 4095, up to 500,000 times a second, from 5 inputs (channels), one at a time:
 
 | Channel | Input | Notes |
 |---------|-------|-------|
@@ -212,7 +212,7 @@ An ADC measures a voltage and gives a whole number. The ADC of the RP2040 (a suc
 | 3 | GP29 (ADC3) | On Pico: measures VSYS/3 |
 | 4 | Internal | On-chip temperature sensor |
 
-The ADC compares the input with a reference voltage, which on the Pico is the 3.3 V supply (pin ADC_VREF). The number 4095 means "equal to the reference". One step of the number, called one count, is therefore:
+The ADC compares the input with a reference voltage, on the Pico the 3.3 V supply (pin ADC_VREF); 4095 means "equal to the reference". So one step, called one count, is:
 
 ```
 Resolution = 3.3V / 4096 = 0.000806V per count (approximately 0.8 mV)
@@ -220,12 +220,12 @@ Resolution = 3.3V / 4096 = 0.000806V per count (approximately 0.8 mV)
 
 ### Why 12 bits are not 12 bits of accuracy
 
-A step of 0.8 mV is the resolution: the smallest change the number can show. It is not the accuracy. A ruler marked in millimetres does not measure to a millimetre if the ruler itself shakes. Two things do this to the ADC:
+A step of 0.8 mV is the resolution, the smallest change the number can show, not the accuracy: a ruler marked in millimetres does not measure to a millimetre if the ruler itself shakes. Two things shake the ADC:
 
 - The reference is the 3.3 V supply, which comes from a switching regulator and carries its noise.
 - The converter adds noise and small errors of its own. The RP2040 datasheet gives about 8.7 effective bits, not 12.
 
-So a steady voltage gives readings that move by several counts, and a single reading can be trusted to about 8 mV. Averaging many readings recovers some of the resolution.
+So a steady voltage gives readings that move by several counts, and a single reading can be trusted to about 8 mV. Averaging recovers some of the resolution: the average of 16 readings has a quarter of the random noise, which is 2 more effective bits.
 
 ### Round-Robin Mode
 
@@ -256,7 +256,7 @@ adc_run(true);
 <InArticleAd />
 
 
-ADC channel 4 is connected to a temperature sensor inside the chip. The sensor gives 0.706 V at 27 degrees C, and its voltage falls by 1.721 mV for each degree the chip gets warmer. The RP2040 datasheet turns this into a formula, with V the measured voltage in volts:
+ADC channel 4 is a temperature sensor inside the chip. It gives 0.706 V at 27 degrees C, and its voltage falls by 1.721 mV for each degree warmer. The RP2040 datasheet turns this into a formula, with V the measured voltage in volts:
 
 ```
 T (degrees C) = 27 - (V - 0.706) / 0.001721
@@ -270,7 +270,7 @@ V = raw_adc * (3.3 / 4096)
 
 For example, a reading of 876 is 876 × 3.3 / 4096 = 0.7058 V, which gives 27 - (0.7058 - 0.706) / 0.001721 = 27.1 degrees C.
 
-The sensor is not calibrated: expect an error of about plus or minus 2 degrees C. It tells you how warm the chip is, which is warmer than the air around the board.
+The sensor is not calibrated: expect an error of about plus or minus 2 degrees C. It measures the chip, which is warmer than the air around the board.
 
 ```c
 /* Read the on-chip temperature */
@@ -304,7 +304,7 @@ The numbers in brackets are the board pin numbers.
   └──────────────────────┘
 ```
 
-The potentiometer is a voltage divider between 3.3V and GND: its middle pin gives 0V to 3.3V on GP26 as you turn the knob. The LED is driven by PWM on GP15 (slice 7, output B). Its long leg (the anode) goes to the 220 ohm resistor, which limits the current, and its short leg goes to GND.
+The potentiometer is a voltage divider between 3.3V and GND: its middle pin gives 0V to 3.3V on GP26 as you turn the knob. The LED is driven by PWM on GP15 (slice 7, output B): its long leg (the anode) goes to the 220 ohm current-limiting resistor, its short leg to GND.
 
 :::note
 On the Pico board only GP26, GP27 and GP28 can be ADC inputs. All other GPIOs are digital only. Do not also set an ADC pin as a digital output.
@@ -434,7 +434,7 @@ pico_enable_stdio_uart(led_brightness 0)
 pico_add_extra_outputs(led_brightness)
 ```
 
-Compared with the CMakeLists.txt of the USB text injector, two things change. The libraries are `hardware_adc` and `hardware_pwm` in place of TinyUSB. And `pico_enable_stdio_usb()` sends the output of `printf()` to the computer through USB CDC, a serial port carried over the USB cable.
+Compared with the USB text injector, two things change: the libraries are `hardware_adc` and `hardware_pwm` in place of TinyUSB, and `pico_enable_stdio_usb()` sends `printf()` output to the computer through USB CDC, a serial port carried over the USB cable.
 
 ## Building and Flashing
 
@@ -473,7 +473,7 @@ Compared with the CMakeLists.txt of the USB text injector, two things change. Th
    # Or use the Arduino Serial Monitor, PuTTY, or any terminal program
    ```
 
-6. Turn the potentiometer knob. The LED brightness should change smoothly, and the serial output should show the ADC reading, voltage, duty cycle, and temperature updating in real time.
+6. Turn the knob. The LED brightness should change smoothly, and the serial output should show the ADC reading, voltage, duty cycle and temperature as they change.
 </Steps>
 
 ## Exercises
@@ -481,10 +481,10 @@ Compared with the CMakeLists.txt of the USB text injector, two things change. Th
 <InArticleAd />
 
 
-1. Add a second LED on GP14 (Slice 7, Channel A). Since GP14 and GP15 share the same PWM slice, both LEDs will run at the same frequency. Set the second LED to the inverse duty cycle (`PWM_WRAP - pwm_level`) so that one LED brightens while the other dims.
-2. Implement a "breathing" LED effect that ignores the potentiometer. Use a loop that ramps the duty cycle up from 0 to full, then back down, with small steps and short delays. Experiment with linear versus exponential ramping (human eyes perceive brightness logarithmically, so exponential curves look smoother).
-3. Change the ADC sampling to use averaging. Take 16 consecutive readings of channel 0, sum them, and divide by 16 before mapping to PWM. Compare the stability of the serial output with and without averaging, especially at mid-range potentiometer positions.
-4. Log the temperature sensor reading once per second (separate from the 5 Hz ADC loop). Track the minimum and maximum temperatures seen since power-on. Print a summary line every 10 seconds showing current, min, and max temperatures.
+1. Add a second LED on GP14 (slice 7, channel A). It shares the slice with GP15, so both LEDs run at the same frequency. Give it the inverse duty cycle (`PWM_WRAP - pwm_level`) so that one LED brightens while the other dims.
+2. Make a "breathing" LED that ignores the potentiometer: a loop ramps the duty cycle from 0 to full and back, in small steps with short delays. Compare a linear and an exponential ramp (the eye senses brightness logarithmically, so the exponential one looks smoother).
+3. Average the ADC: take 16 consecutive readings of channel 0, sum them, and divide by 16 before mapping to PWM. Compare how steady the serial output is with and without averaging, mainly with the knob near the middle.
+4. Log the temperature once per second, apart from the 5 Hz ADC loop. Track the minimum and maximum since power-on, and every 10 seconds print a line with the current, minimum and maximum temperatures.
 
 ## Summary
 
