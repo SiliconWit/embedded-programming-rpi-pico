@@ -25,12 +25,12 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingRpiPicoComments from '../../../../components/embedded-programming-rpi-pico/EmbeddedProgrammingRpiPicoComments.astro';
 
-Recording audio on a microcontroller means sampling thousands of times per second without missing a single conversion. If the CPU handles each sample individually, it spends most of its time just moving bytes around. The RP2040's DMA controller changes this completely. You configure a channel, point it at the ADC result register, set a pacing timer, and the hardware streams samples into memory continuously while both CPU cores remain free. In this lesson you will chain two DMA channels in a ping-pong configuration to capture audio from an electret microphone and write the recordings to an external SPI flash chip. #DMA #AudioSampling #DataPipelines
+A sound recorder must take a sample 8,000 times a second and must not miss one: every missed sample is a click in the recording. If the processor fetches each sample itself, it cannot be away for longer than one sample period, 125 microseconds, and saving to a flash chip takes it away for milliseconds. DMA (direct memory access) removes the conflict. It is hardware that copies data from one place to another without the processor: you tell it where to read, where to write and how many items, and it does the rest. In this lesson two DMA channels take turns to fill two buffers from a microphone, and the processor has time to write each full buffer to a flash chip. #DMA #AudioSampling #DataPipelines
 
 ## What We Are Building
 
 <Card title="Audio Sampler" icon="star">
-A voice/sound recorder built on the RP2040. An electret microphone module feeds the ADC, which is paced by a DMA timer at 8 kHz sample rate. Two DMA channels alternate in a ping-pong buffer arrangement: while one fills, the CPU writes the other to a W25Q SPI flash module. A button starts and stops recording. Playback streams samples back from flash to a PWM audio output.
+A sound recorder on the RP2040. A microphone module feeds the ADC, which takes 8,000 samples a second. Two DMA channels fill two buffers in turn (this is called ping-pong): while one buffer fills, the CPU writes the other to a W25Q flash memory module. A button starts and stops the recording. For playback the samples go from flash to a PWM audio output.
 </Card>
 
 **Project specifications:**
@@ -53,7 +53,7 @@ A voice/sound recorder built on the RP2040. An electret microphone module feeds 
 | 2 | Electret microphone module | 1 | MAX4466 or MAX9814 breakout with gain control |
 | 3 | W25Q32 SPI flash module | 1 | 4 MB, 3.3V compatible |
 | 4 | Push button | 1 | Record start/stop |
-| 5 | Piezo buzzer or speaker | 1 | For playback (reuse from Lesson 4) |
+| 5 | Piezo buzzer or speaker | 1 | For playback |
 | 6 | Breadboard + jumper wires | 1 set | |
 
 ## How DMA Works on RP2040
@@ -61,32 +61,26 @@ A voice/sound recorder built on the RP2040. An electret microphone module feeds 
 <InArticleAd />
 
 
-The RP2040 contains a DMA controller with 12 independent channels. Each channel can move data between any two addresses in the chip's memory map: peripheral to memory, memory to peripheral, or memory to memory. The CPU sets up the transfer by writing a source address, a destination address, a transfer count, and a control register. Once triggered, the DMA engine handles every byte without CPU involvement.
+Without DMA, the CPU moves every sample itself: stop the current work, read the ADC, store the value, return. That is like a worker who carries each box from a machine to the store by hand, and can do nothing else. DMA is a conveyor belt between the two. The worker sets it up once and then only deals with full pallets.
+
+The RP2040 has a DMA controller with 12 channels. One channel does one copying job between any two addresses: peripheral to memory, memory to peripheral, or memory to memory. In the RP2040 every peripheral register has an address, like a memory cell, so "read the ADC" is a read from an address. This is the pipeline you will build:
 
 ```text
- DMA Ping-Pong Audio Pipeline
- ┌─────────┐  DREQ_ADC  ┌──────────────────┐
- │   ADC   ├────────────>│  DMA Channel 0   │
- │  FIFO   │  paced by   │  Write to Buf A  │
- │ (8 kHz) │  ADC clock  │  (1024 samples)  │
- └─────────┘             └────────┬─────────┘
-                          chain   │ on complete
-                         ┌────────v─────────┐
-                         │  DMA Channel 1   │
-                         │  Write to Buf B  │
-                         │  (1024 samples)  │
-                         └────────┬─────────┘
-                          chain   │ back to Ch0
-                         ┌────────v─────────┐
-                         │  CPU writes the  │
-                         │  filled buffer   │
-                         │  to SPI flash    │
-                         └──────────────────┘
+ ┌──────────┐ one request ┌───────────────┐   ┌──────────┐
+ │ ADC FIFO ├─────────────┤ DMA channel A ├──>│ Buffer A │
+ │  8 kHz   │ per sample  │ DMA channel B ├──>│ Buffer B │
+ └──────────┘             └───────────────┘   └────┬─────┘
+                           A full: B starts        │ a full
+                           B full: A starts        │ buffer
+                                              ┌────▼─────┐
+                                              │ CPU: to  │
+                                              │ flash    │
+                                              └──────────┘
 ```
 
 ### DMA Channel Registers
 
-Each of the 12 channels has four core registers:
+A copying job is described by four things: where from, where to, how many, and how. Each channel has one register for each:
 
 | Register | Purpose |
 |----------|---------|
@@ -95,62 +89,62 @@ Each of the 12 channels has four core registers:
 | TRANS_COUNT | Number of transfers to perform before completion. |
 | CTRL / CTRL_TRIG | Control register: data size, increment settings, DREQ source, chain target, IRQ enable. Writing CTRL_TRIG also starts the transfer. |
 
-The control register packs several fields. The most important ones for this lesson:
+The control register holds several settings, called fields. You will not write these bits by hand: each SDK call in the code below sets one field. The fields this lesson uses:
 
 | Field | Bits | Description |
 |-------|------|-------------|
-| DATA_SIZE | 1:0 | Transfer width: 0 = byte, 1 = halfword (16-bit), 2 = word (32-bit) |
+| DATA_SIZE | 3:2 | Transfer width: 0 = byte, 1 = halfword (16-bit), 2 = word (32-bit) |
 | INCR_READ | 4 | If set, increment READ_ADDR after each transfer |
 | INCR_WRITE | 5 | If set, increment WRITE_ADDR after each transfer |
 | TREQ_SEL | 20:15 | Transfer request signal (DREQ) that paces the channel |
-| CHAIN_TO | 24:21 | Channel number to trigger when this channel completes |
+| CHAIN_TO | 14:11 | Channel number to trigger when this channel completes |
 | IRQ_QUIET | 21 | If clear, raise an interrupt when transfer completes |
 
 ### Transfer Request Signals (DREQ)
 
-A DMA channel does not necessarily run at full bus speed. The TREQ_SEL field selects a pacing signal, so the channel only transfers one data element each time the chosen peripheral asserts its DREQ line. This prevents the DMA from overrunning a peripheral's FIFO.
+Left alone, a channel copies as fast as the bus allows: millions of items a second. The ADC produces only 8,000 samples a second, so an unpaced channel would read the same old sample again and again. The channel must wait for the peripheral. Each peripheral has a signal for this, its DREQ (data request), which says "I have an item ready" (or, for an output, "I have room for one"). The TREQ_SEL field chooses which DREQ the channel obeys, and the channel moves one item for each request.
 
-Common DREQ assignments on the RP2040:
+Some DREQ numbers of the RP2040:
 
 | DREQ Value | Signal | Typical Use |
 |------------|--------|-------------|
 | 0 | DREQ_PIO0_TX0 | PIO0 state machine 0 TX FIFO |
-| 4 | DREQ_PIO1_TX0 | PIO1 state machine 0 TX FIFO |
+| 8 | DREQ_PIO1_TX0 | PIO1 state machine 0 TX FIFO |
 | 16 | DREQ_SPI0_TX | SPI0 transmit FIFO |
 | 17 | DREQ_SPI0_RX | SPI0 receive FIFO |
 | 18 | DREQ_SPI1_TX | SPI1 transmit FIFO |
 | 19 | DREQ_SPI1_RX | SPI1 receive FIFO |
-| 24 | DREQ_ADC | ADC FIFO has data ready |
+| 36 | DREQ_ADC | ADC FIFO has data ready |
 | 0x3F | DREQ_FORCE | Unpaced (transfer as fast as possible) |
 
-For audio sampling, DREQ_ADC is the key signal. Each time the ADC completes a conversion and places a result in its FIFO, it asserts this DREQ line, and the DMA transfers exactly one sample.
+This lesson uses DREQ_ADC. Each time the ADC finishes a conversion and puts the result in its FIFO, it raises this request, and the DMA moves exactly one sample.
 
 ### Pacing Timers
 
-The RP2040 DMA block also contains four pacing timers (timers 0 through 3). Each timer divides the system clock by a programmable ratio and can serve as a DREQ source. This is useful when you want DMA to run at a specific rate that is not tied to any particular peripheral. You configure a pacing timer by writing a numerator and denominator to its register: the timer asserts its DREQ at a rate of `(sys_clk * numerator) / denominator` Hz.
+Some jobs have no peripheral that sets the rate. For these the DMA block has four pacing timers (0 to 3), each of which can serve as a DREQ. You write a numerator and a denominator to its register, and the timer gives requests at `(sys_clk * numerator) / denominator` Hz.
 
-For ADC sampling at a fixed rate, we will use the ADC's own clock divider rather than a DMA pacing timer. The ADC peripheral has a `DIV` register that controls how many clock cycles pass between conversions. This is more precise for audio work because the ADC DREQ fires exactly when a new sample is ready.
+This lesson does not use them. The ADC has its own clock divider (the `DIV` register) that sets the time between conversions, and DREQ_ADC then arrives exactly when a new sample is ready.
 
 ## ADC with DMA Pacing
 
 <InArticleAd />
 
 
-The RP2040's ADC can run in free-running mode, where it continuously converts and pushes results into a 4-entry FIFO. When the FIFO contains at least one sample, the ADC asserts DREQ_ADC. A DMA channel configured with `TREQ_SEL = DREQ_ADC` will then read one sample from the ADC FIFO register each time a conversion completes.
+In free-running mode the ADC converts again and again by itself and puts each result into a FIFO, a queue with room for 4 samples. While the FIFO holds at least one sample, the ADC raises DREQ_ADC. A DMA channel set to obey DREQ_ADC takes one sample out of the FIFO for each request, so the FIFO never fills.
 
 ### ADC Clock Divider
 
-The ADC runs at 48 MHz and needs 96 cycles per conversion, giving a maximum rate of 500 kHz. To sample at 8 kHz, we set the clock divider:
+The sample rate must be exact, or the recording plays back at the wrong pitch. The ADC has a 48 MHz clock and needs 96 cycles for one conversion, so its highest rate is 48,000,000 / 96 = 500 kHz. With a clock divider, the ADC starts one conversion every (1 + divider) cycles. For 8 kHz:
 
 ```
-divider = 48,000,000 / (96 * 8000) - 1 = 62.5 - 1 = 61.5
+divider = 48,000,000 / 8000 - 1 = 6000 - 1 = 5999
 ```
 
-Calling `adc_set_clkdiv(61.5f)` inserts 61.5 extra cycles between conversions, yielding one sample every 125 microseconds (8 kHz).
+`adc_set_clkdiv(5999.0f)` starts one conversion every 6000 clock cycles: one sample every 125 microseconds. A divider below 95 has no effect, because a conversion cannot take less than 96 cycles.
 
 ### ADC FIFO Configuration
 
-The `adc_fifo_setup()` function configures the ADC FIFO behavior:
+`adc_fifo_setup()` switches the FIFO on and tells the ADC to raise DREQ_ADC:
 
 ```c
 adc_fifo_setup(
@@ -162,7 +156,7 @@ adc_fifo_setup(
 );
 ```
 
-The DMA read address points to the ADC FIFO register at `&adc_hw->fifo`. Since this is a hardware register, the read address must not increment. The write address points into a RAM buffer and must increment after each transfer.
+Now the two addresses. Every sample comes out of the same place, the ADC FIFO register at `&adc_hw->fifo`, so the read address must stay fixed. Every sample goes into the next free place of a buffer in RAM, so the write address must move forward (increment) after each transfer. A sample has 12 bits, so each transfer is 16 bits wide.
 
 ```c
 // Minimal ADC + DMA setup (single channel, no chaining yet)
@@ -188,27 +182,35 @@ dma_channel_configure(
 );
 ```
 
-When you call `dma_channel_start(dma_chan)` followed by `adc_run(true)`, the ADC begins converting at 8 kHz and the DMA silently fills `sample_buffer` with 1024 samples. The CPU can do other work, then check `dma_channel_is_busy(dma_chan)` or wait on an interrupt.
+After `dma_channel_start(dma_chan)` and `adc_run(true)`, the ADC converts at 8 kHz and the DMA fills `sample_buffer` with 1024 samples. The CPU is free meanwhile. It can ask `dma_channel_is_busy(dma_chan)`, or wait for the interrupt (a signal that makes the processor run a piece of your code) that the channel raises when it finishes.
 
 ## Ping-Pong Double Buffering
 
 <InArticleAd />
 
 
-A single DMA buffer creates a problem: once it fills, you need to process the data and restart the DMA. During that processing gap, any new ADC samples are lost. The solution is double buffering (also called ping-pong buffering), where two DMA channels alternate between two buffers.
+One buffer is not enough for a recording that continues. When the buffer is full, the CPU must save it and start the DMA again, and every sample that arrives in that gap is lost. The answer is two buffers and two channels that take turns, like two buckets under a tap: while you empty one, the other fills.
 
 ### How Channel Chaining Works
 
-Each DMA channel has a `chain_to` field in its control register. When a channel finishes its transfer count, it triggers the channel specified by `chain_to`. If channel A chains to channel B, and channel B chains back to channel A, you get an automatic alternating pattern:
+The change from one channel to the other must not depend on the CPU, or samples are lost again. Each channel therefore has a `chain_to` field: when the channel has done all its transfers, the hardware starts the channel named there. Channel A names B, and B names A:
 
 <Steps>
 1. Channel A starts, filling Buffer A from the ADC FIFO.
-2. Channel A finishes its 1024 transfers and fires an interrupt. It then triggers Channel B via `chain_to`.
-3. Channel B immediately starts filling Buffer B. No samples are lost because the handoff is instantaneous in hardware.
-4. While Channel B fills, the CPU processes (or writes to flash) the completed Buffer A.
-5. Channel B finishes, fires an interrupt, and triggers Channel A again via its own `chain_to`.
-6. The cycle repeats indefinitely until the CPU disables both channels.
+2. Channel A finishes its 1024 transfers, raises an interrupt, and starts Channel B through `chain_to`.
+3. Channel B fills Buffer B from the next sample on. No sample is lost, because the hardware makes the change.
+4. While Channel B fills, the CPU writes the full Buffer A to flash.
+5. Channel B finishes, raises an interrupt, and starts Channel A again.
+6. The cycle repeats until the CPU stops both channels.
 </Steps>
+
+At 8 kHz a buffer of 1024 samples fills in 128 ms. The CPU has that long to save the other one:
+
+```text
+ time, ms    0        128       256       384
+ DMA fills   ├── A ───┼─── B ───┼─── A ───┼─── B ──
+ CPU saves            ├─ A ─┤   ├─ B ─┤   ├─ A ─┤
+```
 
 ### Configuring the Ping-Pong Pair
 
@@ -252,11 +254,11 @@ dma_channel_configure(chan_b, &cfg_b,
 );
 ```
 
-The critical detail: when a chained channel is triggered, it reloads its own write address and transfer count from its configuration registers. This means Channel A always writes to `buf_a` and Channel B always writes to `buf_b`, no matter how many times they cycle.
+One detail decides whether this works. When a channel is started again through the chain, it reloads its transfer count but not its write address. The write address stays where the last turn ended, so on its second turn Channel A would write past the end of `buf_a` and destroy other data. The interrupt handler below therefore points each channel back to the start of its buffer as soon as it finishes. This is safe, because at that moment the other channel is the one running.
 
 ### DMA Interrupts
 
-Both channels need to raise an interrupt when they finish, so the CPU knows which buffer is ready for processing:
+Both channels raise an interrupt when they finish, so the CPU knows which buffer is full:
 
 ```c
 // Enable IRQ0 for both channels
@@ -275,10 +277,12 @@ volatile int buffer_ready = -1;  // -1 = none, 0 = buf_a ready, 1 = buf_b ready
 void dma_irq_handler(void) {
     if (dma_hw->ints0 & (1u << chan_a)) {
         dma_hw->ints0 = 1u << chan_a;  // Clear interrupt
+        dma_channel_set_write_addr(chan_a, buf_a, false);  // Rewind for next turn
         buffer_ready = 0;              // Buffer A is complete
     }
     if (dma_hw->ints0 & (1u << chan_b)) {
         dma_hw->ints0 = 1u << chan_b;  // Clear interrupt
+        dma_channel_set_write_addr(chan_b, buf_b, false);  // Rewind for next turn
         buffer_ready = 1;              // Buffer B is complete
     }
 }
@@ -289,7 +293,7 @@ void dma_irq_handler(void) {
 <InArticleAd />
 
 
-The W25Q32 is a 4 MB SPI NOR flash chip. It communicates over standard SPI at up to 80 MHz. For audio storage, we need three operations: sector erase, page program (write), and read.
+The samples must go somewhere that keeps them without power. The W25Q32 is a 4 MB flash memory chip with an SPI interface (a four-wire serial bus), usable up to 80 MHz. The recorder needs three operations: sector erase, page program (write) and read.
 
 ### W25Q32 Command Reference
 
@@ -304,7 +308,12 @@ The W25Q32 is a 4 MB SPI NOR flash chip. It communicates over standard SPI at up
 
 ### Flash Constraints
 
-Flash memory has two important constraints. First, you can only write to erased memory. An erased byte is 0xFF, and programming can only change bits from 1 to 0. Second, erasing happens in 4 KB sectors (the smallest erasable unit). Page programming writes up to 256 bytes at a time. These constraints shape how we organize our recording: we erase sectors ahead of time and write in 256-byte pages.
+Flash memory is not written like RAM, and two rules shape the recorder:
+
+- You can write only to erased memory. An erased byte is 0xFF, and a write can only change bits from 1 to 0.
+- Erasing works on a whole 4 KB sector at a time and is slow (about 45 ms). Writing works on a page of at most 256 bytes (about 0.7 ms).
+
+So the recorder erases each sector before it writes into it, and writes in pages of 256 bytes.
 
 ### Minimal SPI Flash Driver
 
@@ -418,14 +427,14 @@ void flash_chip_erase(void) {
 The minimal driver above uses GP10-GP13 for illustration. The complete project below uses GP12-GP15 to avoid conflicts with other peripherals. Adjust the pin definitions to match your wiring.
 :::
 
-The flash write functions include `flash_wait_busy()` calls, which block until the flash chip finishes its internal operation. During recording, the CPU calls these functions on the completed ping-pong buffer while the DMA fills the other buffer. Since a page program takes about 0.7 ms and we get a new 2048-byte buffer every 128 ms (1024 samples at 8 kHz), there is plenty of time.
+The write and erase functions call `flash_wait_busy()`, which keeps the CPU waiting until the flash chip has finished. This waiting is the reason for DMA in this project: the samples continue to arrive while the CPU waits. One buffer is 2048 bytes, or eight pages: 8 × 0.7 ms, about 6 ms. A sector is two buffers, so every second buffer also needs an erase of about 45 ms first. Both fit in the 128 ms that the other buffer needs to fill.
 
 ## Complete Project Code
 
 <InArticleAd />
 
 
-The following is the full source for the audio sampler. It combines the ADC, DMA ping-pong, SPI flash driver, and PWM playback into a single program.
+This is the full source of the audio sampler: the ADC, the two DMA channels, the flash driver and the PWM playback in one program.
 
 ```c
 // audio_sampler.c
@@ -614,10 +623,12 @@ void flash_write_buffer(const uint8_t *data, size_t total_len) {
 void dma_irq_handler(void) {
     if (dma_hw->ints0 & (1u << dma_chan_a)) {
         dma_hw->ints0 = 1u << dma_chan_a;   // Clear interrupt flag
+        dma_channel_set_write_addr(dma_chan_a, buf_a, false);  // Rewind for next turn
         buffer_ready = 0;                    // Buffer A is full
     }
     if (dma_hw->ints0 & (1u << dma_chan_b)) {
         dma_hw->ints0 = 1u << dma_chan_b;   // Clear interrupt flag
+        dma_channel_set_write_addr(dma_chan_b, buf_b, false);  // Rewind for next turn
         buffer_ready = 1;                    // Buffer B is full
     }
 }
@@ -631,11 +642,11 @@ void adc_dma_init(void) {
     adc_gpio_init(MIC_PIN);
     adc_select_input(0);  // ADC0 = GP26
 
-    // Set sample rate: 48 MHz / 96 = 500 kHz max rate
-    // For 8 kHz: divider = 500000 / 8000 - 1 = 61.5 (using adc_set_clkdiv which adds 1)
-    // More precisely: 48000000 / (96 * 8000) = 62.5, so clkdiv = 62.5 - 1 = 61.5
-    // But the SDK function expects the full divider value
-    float clkdiv = (48000000.0f / 8000.0f / 96.0f) - 1.0f;
+    // Set sample rate: the ADC clock is 48 MHz and one conversion takes
+    // 96 cycles (500 kHz maximum rate). With a divider, one conversion
+    // starts every (1 + clkdiv) cycles of the 48 MHz clock.
+    // For 8 kHz: 48000000 / 8000 = 6000 cycles, so clkdiv = 6000 - 1 = 5999
+    float clkdiv = (48000000.0f / SAMPLE_RATE) - 1.0f;
     adc_set_clkdiv(clkdiv);
 
     adc_fifo_setup(
@@ -701,6 +712,11 @@ void start_recording(void) {
 
     // Drain any leftover ADC FIFO entries
     adc_fifo_drain();
+
+    // Point both channels at the start of their buffers (a recording that
+    // was stopped part way leaves the write addresses in the middle)
+    dma_channel_set_write_addr(dma_chan_a, buf_a, false);
+    dma_channel_set_write_addr(dma_chan_b, buf_b, false);
 
     // Start Channel A, which will chain to B when done
     dma_channel_start(dma_chan_a);
@@ -827,7 +843,7 @@ int main(void) {
 
     // Verify flash chip
     uint32_t jedec_id = flash_read_jedec_id();
-    printf("Flash JEDEC ID: 0x%06X\n", jedec_id);
+    printf("Flash JEDEC ID: 0x%06X\n", (unsigned)jedec_id);
     if ((jedec_id & 0xFF0000) == 0) {
         printf("WARNING: Flash not detected. Check wiring.\n");
     }
@@ -1005,22 +1021,22 @@ The build produces `audio_sampler.uf2` in the `build` directory.
 <InArticleAd />
 
 
-Here is the step-by-step flow of the DMA chain during a recording session:
+This is what happens during one recording, in order:
 
 <Steps>
-1. The user presses the button. `start_recording()` drains the ADC FIFO, starts DMA Channel A, and enables ADC free-running mode.
-2. The ADC converts one sample every 125 microseconds (8 kHz). Each conversion pushes a 12-bit value into the ADC FIFO and asserts DREQ_ADC.
-3. DMA Channel A responds to DREQ_ADC, reads one halfword (16 bits) from the ADC FIFO register, and writes it to the next position in `buf_a`. The read address stays fixed; the write address increments by 2 bytes.
-4. After 1024 transfers, Channel A has filled `buf_a` completely. The DMA hardware clears Channel A's enable bit, fires an interrupt on DMA_IRQ_0, and triggers Channel B through the `chain_to` field.
-5. Channel B starts immediately. It reads from the same ADC FIFO register and writes into `buf_b`. No samples are lost because the chain trigger is a single-cycle hardware operation.
-6. The DMA interrupt handler sets `buffer_ready = 0`, signaling the main loop that `buf_a` contains valid data.
-7. The main loop detects `buffer_ready == 0`, casts `buf_a` to a byte pointer, and writes 2048 bytes to the SPI flash. It handles sector erases at 4 KB boundaries and splits writes into 256-byte pages.
-8. While the CPU writes `buf_a` to flash, Channel B continues filling `buf_b` in the background. At 8 kHz, filling 1024 samples takes 128 ms. Flash writes for 2048 bytes (eight 256-byte pages) take about 6 ms total. The CPU finishes well before the buffer fills.
-9. Channel B completes, fires an interrupt, and chains back to Channel A. The cycle continues.
-10. The user presses the button again. `stop_recording()` halts the ADC, aborts both DMA channels, and records the total byte count.
+1. You press the button. `start_recording()` empties the ADC FIFO, starts DMA Channel A, and starts the ADC in free-running mode.
+2. The ADC converts one sample every 125 microseconds. Each result goes into the ADC FIFO, and the ADC raises DREQ_ADC.
+3. For each request, Channel A reads 16 bits from the ADC FIFO register and writes them to the next place in `buf_a`. The read address stays fixed; the write address moves forward by 2 bytes.
+4. After 1024 transfers `buf_a` is full. The hardware raises the interrupt DMA_IRQ_0 and starts Channel B through `chain_to`.
+5. Channel B takes the next sample and writes into `buf_b`. No sample is lost.
+6. The interrupt handler points Channel A back to the start of `buf_a` for its next turn and sets `buffer_ready = 0`, which tells the main loop that `buf_a` is full.
+7. The main loop sees `buffer_ready == 0` and writes the 2048 bytes of `buf_a` to the flash: eight pages of 256 bytes, with a sector erase first at every 4 KB boundary.
+8. Meanwhile Channel B fills `buf_b`. The CPU finishes with `buf_a` before `buf_b` is full.
+9. Channel B finishes, raises the interrupt, and starts Channel A. The cycle continues.
+10. You press the button again. `stop_recording()` stops the ADC, stops both DMA channels, and stores the total number of bytes.
 </Steps>
 
-The critical timing constraint: the CPU must finish processing one buffer before the other buffer fills. At 8 kHz with 1024-sample buffers, each buffer takes 128 ms to fill. The flash writes take roughly 6 ms (eight pages at 0.7 ms each plus overhead). This leaves over 120 ms of margin, which is more than enough even if the CPU handles additional tasks.
+The one rule the design must keep: the CPU must finish with one buffer before the other is full. A buffer fills in 128 ms. The page writes take about 6 ms, and every second buffer also needs a sector erase of about 45 ms, so the longest typical case is about 51 ms. That leaves about 77 ms. These are typical values. The datasheet maximum for a sector erase is several times longer, so a recorder that must never lose a buffer erases its sectors before the recording starts.
 
 :::tip[Instrument it]
 This is exactly the machinery a real vibration monitor needs. Bearing and gear faults live in the kilohertz range, and catching them means sampling an accelerometer fast and continuously without dropping a window, which is what DMA ping-pong buffering gives you: one buffer fills from the ADC while the other is processed or flushed to flash. Stream an ADXL1002 or a digital accelerometer through this pipeline, run an FFT, and a [Pico](/education/sensor-actuator-interfacing-stm32/) becomes a condition monitor that [reports the spectrum](https://siliconwit.io) the moment a fault tone rises.
@@ -1031,14 +1047,14 @@ This is exactly the machinery a real vibration monitor needs. Bearing and gear f
 <InArticleAd />
 
 
-Try these modifications to deepen your understanding of DMA and the audio pipeline:
+Four changes to try on the working recorder:
 
 <CardGrid>
 <Card title="1. Increase the Sample Rate" icon="pencil">
-Change the sample rate from 8 kHz to 16 kHz or even 44.1 kHz. You need to adjust the ADC clock divider (`adc_set_clkdiv`). At higher rates, the buffers fill faster, so check whether the flash writes still complete in time. At 44.1 kHz, each 1024-sample buffer fills in about 23 ms, which is still comfortable for flash page writes. Monitor the serial output to confirm no buffers are missed.
+Change the sample rate from 8 kHz to 16 kHz or even 44.1 kHz. You need to adjust the ADC clock divider (`adc_set_clkdiv`). At higher rates, the buffers fill faster, so check whether the flash writes still complete in time. At 44.1 kHz, each 1024-sample buffer fills in about 23 ms. That is enough for the eight page writes (about 6 ms) but not for a 45 ms sector erase, so erase the sectors before recording starts or use larger buffers. Monitor the serial output to confirm no buffers are missed.
 </Card>
 <Card title="2. Add Simple Compression" icon="pencil">
-The raw 12-bit samples are stored as 16-bit values, wasting 4 bits per sample. Implement ADPCM (Adaptive Differential Pulse Code Modulation) to compress the audio to 4 bits per sample, giving you 8x more recording time. The IMA ADPCM algorithm uses a step table and an index to encode differences between consecutive samples. Compress in the main loop before writing to flash, and decompress during playback.
+The raw 12-bit samples are stored as 16-bit values, wasting 4 bits per sample. Implement ADPCM (Adaptive Differential Pulse Code Modulation) to compress the audio to 4 bits per sample, giving you 4 times more recording time than the 16-bit storage used here. The IMA ADPCM algorithm uses a step table and an index to encode differences between consecutive samples. Compress in the main loop before writing to flash, and decompress during playback.
 </Card>
 <Card title="3. Use DMA Pacing Timer Instead of ADC Clock Divider" icon="pencil">
 Replace the ADC clock divider approach with a DMA pacing timer. Set the ADC to run at its maximum rate and configure one of the four DMA pacing timers (TREQ values 0x3B through 0x3E) to throttle the DMA transfers to 8 kHz. Compare the sample timing accuracy with an oscilloscope or by recording a known-frequency tone and checking the playback pitch.

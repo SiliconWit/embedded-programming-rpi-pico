@@ -25,12 +25,12 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingRpiPicoComments from '../../../../components/embedded-programming-rpi-pico/EmbeddedProgrammingRpiPicoComments.astro';
 
-The RP2040 has a built-in USB 1.1 PHY, which means it can be a USB device without any external chip. Plug it into a PC and it can appear as a keyboard, a serial port, a flash drive, or a gamepad. In this lesson you will build a custom USB gamepad using TinyUSB. A thumb joystick controls two analog axes, four buttons map to gamepad buttons, and the whole thing shows up as a standard HID game controller in Windows, macOS, and Linux with zero driver installation. You will write the HID report descriptor by hand, understanding every byte. #USB #HID #TinyUSB
+A device that needs its own driver is a device many people cannot use. Someone must write the driver for each operating system, the user must install it, and an update can break it. USB avoids this with device classes: a device that describes itself in a standard way works with the driver every computer already has. The RP2040 has the USB hardware built in, so it needs no extra chip. In this lesson you build a USB gamepad with the TinyUSB library. A thumb joystick gives two axes, four buttons give four bits, and Windows, macOS and Linux accept it as a game controller with no driver to install. You write the description of its data by hand, byte by byte. #USB #HID #TinyUSB
 
 ## What We Are Building
 
 <Card title="Custom USB Gamepad" icon="star">
-A USB HID gamepad built on the Pico. A thumb joystick module provides X and Y analog axes via ADC. Four push buttons map to gamepad buttons A, B, X, and Y. The firmware uses TinyUSB to present a standard HID gamepad descriptor, so the controller works immediately on any operating system. You will also add a CDC serial interface as a composite device for debug output.
+A USB gamepad built on the Pico. It belongs to the HID class (Human Interface Device), the USB class for keyboards, mice and game controllers. A thumb joystick module gives the X and Y axes through the ADC, the analog to digital converter. Four push buttons become gamepad buttons A, B, X, and Y. The same cable also carries a serial port for debug messages, from the CDC class (Communications Device Class). A device with more than one function is called a composite device.
 </Card>
 
 **Project specifications:**
@@ -52,7 +52,7 @@ A USB HID gamepad built on the Pico. A thumb joystick module provides X and Y an
 | 1 | Raspberry Pi Pico | 1 | From previous lessons |
 | 2 | Thumb joystick module | 1 | Dual-axis analog with button |
 | 3 | Push buttons | 4 | Momentary tactile switches |
-| 4 | 10K ohm resistors | 4 | Pull-downs (or use internal pull-ups) |
+| 4 | 10K ohm resistors | 4 | Not needed with the internal pull-ups, which this code uses |
 | 5 | Breadboard + jumper wires | 1 set | |
 
 ## USB Device Architecture
@@ -60,48 +60,37 @@ A USB HID gamepad built on the Pico. A thumb joystick module provides X and Y an
 <InArticleAd />
 
 
-Every USB device describes itself to the host through a hierarchy of descriptors. When you plug in a device, the host reads these descriptors to figure out what the device is, what it can do, and which driver to load. Understanding this hierarchy is essential before writing any TinyUSB code.
+When you plug in a USB device, the computer knows nothing about it. USB calls the computer the host. The host cannot guess whether the new device is a mouse, a printer or a gamepad, so it asks, and the device answers with descriptors. A descriptor is a small block of bytes in a fixed format in which the device states what it is and how to talk to it. From these answers the host chooses a driver. This exchange at plug-in is called enumeration.
 
 ### Descriptor Hierarchy
 
+The descriptors answer four questions, each one inside the one before:
+
+| Level | Descriptor | The question it answers |
+|-------|-----------|---------|
+| 1 | Device | Who are you? Vendor ID (VID), product ID (PID), USB version |
+| 2 | Configuration | Which functions do you offer together, and how much current do you need? |
+| 3 | Interface | What is this one function, and which class does it belong to (HID, CDC, mass storage)? |
+| 4 | Endpoint | Through which channel does its data flow? Direction, transfer type, packet size, how often |
+
+An endpoint is a numbered channel inside the device. Directions are named from the side of the host: IN is device to host, OUT is host to device. For the gamepad of this lesson the answers are:
+
 ```text
- USB Descriptor Hierarchy
- ┌──────────────────────────────────┐
- │  Device Descriptor               │
- │  (VID, PID, USB version)         │
- │  ┌────────────────────────────┐  │
- │  │  Configuration 1           │  │
- │  │  ┌──────────────────────┐  │  │
- │  │  │  Interface 0: HID    │  │  │
- │  │  │  (Gamepad)           │  │  │
- │  │  │  ┌────────────────┐  │  │  │
- │  │  │  │ EP1 IN (INT)   │  │  │  │
- │  │  │  │ 8ms poll, 64B  │  │  │  │
- │  │  │  └────────────────┘  │  │  │
- │  │  └──────────────────────┘  │  │
- │  │  ┌──────────────────────┐  │  │
- │  │  │  Interface 1: CDC    │  │  │
- │  │  │  (Debug serial)      │  │  │
- │  │  │  EP2 IN/OUT (BULK)   │  │  │
- │  │  └──────────────────────┘  │  │
- │  └────────────────────────────┘  │
- └──────────────────────────────────┘
+ Device                  vendor and product ID
+ └─ Configuration 1      100 mA
+    ├─ Interface 0, 1    CDC: serial port
+    │  ├─ Endpoint 1 IN  interrupt: status
+    │  ├─ Endpoint 2 OUT bulk: from the PC
+    │  └─ Endpoint 2 IN  bulk: to the PC
+    └─ Interface 2       HID: the gamepad
+       └─ Endpoint 3 IN  interrupt: 8 ms
 ```
 
-The descriptors form a tree with four levels:
-
-| Level | Descriptor | Purpose |
-|-------|-----------|---------|
-| 1 | Device Descriptor | Identifies the device: vendor ID, product ID, USB version, device class |
-| 2 | Configuration Descriptor | Describes a set of interfaces the device can use simultaneously |
-| 3 | Interface Descriptor | Describes one function (HID, CDC, MSC, etc.) with its class and protocol |
-| 4 | Endpoint Descriptor | Defines a communication pipe: direction, transfer type, max packet size, polling interval |
-
-A single physical device can have multiple configurations, though most devices only use one. Within that configuration, multiple interfaces can coexist. Our gamepad will have two interfaces: one for HID (the gamepad itself) and one for CDC (the debug serial port). This makes it a composite device.
+Most devices have one configuration. The serial port takes two interfaces because the CDC class splits control and data.
 
 ### USB Transfer Types
 
-USB defines four transfer types, each suited to different data patterns:
+A USB device never sends on its own. The host asks each endpoint in turn, and the device answers. Different data needs different treatment: a key press must arrive soon, a file must arrive complete, and sound must arrive on time even if a little is lost. So USB has four transfer types:
 
 | Transfer Type | Guaranteed Bandwidth | Error Recovery | Use Case |
 |--------------|---------------------|---------------|----------|
@@ -110,45 +99,56 @@ USB defines four transfer types, each suited to different data patterns:
 | Bulk | No (uses leftover bandwidth) | Yes | Mass storage, CDC serial data |
 | Isochronous | Yes | No | Audio streaming, video |
 
-HID devices use interrupt transfers for sending reports at a fixed polling interval. The host polls the device every N milliseconds (the bInterval field in the endpoint descriptor). For our gamepad, we set this to 8 ms, giving 125 reports per second. That is fast enough for responsive gameplay.
+HID devices use interrupt transfers. The name misleads: the device does not interrupt the host. The host promises to ask the endpoint at a fixed interval, the `bInterval` field of the endpoint descriptor. The gamepad sets it to 8 ms, so the host asks 125 times a second, which is fast enough for a game. A block of data that a HID device sends is called a report.
 
 ### How TinyUSB Fits In
 
-TinyUSB is a lightweight USB stack included in the Pico SDK. It handles all the low-level USB protocol: enumeration, descriptor responses, endpoint management, and class-specific protocol details. You provide the descriptors through callback functions, and TinyUSB calls your application code when the host requests or sends data.
+TinyUSB is the USB library included in the Pico SDK. It does the protocol work: enumeration, answering descriptor requests, and the rules of each class. Your part is a set of callbacks, functions with fixed names that you write and TinyUSB calls when the host asks for something.
 
-The key TinyUSB callbacks you implement are:
+The callbacks you write are:
 
 - `tud_descriptor_device_cb()`: returns the device descriptor
 - `tud_descriptor_configuration_cb()`: returns the configuration descriptor (which includes all interface and endpoint descriptors)
 - `tud_descriptor_string_cb()`: returns string descriptors (manufacturer, product, serial number)
-- `tud_descriptor_hid_report_cb()`: returns the HID report descriptor
+- `tud_hid_descriptor_report_cb()`: returns the HID report descriptor
 - `tud_hid_report_complete_cb()`: called after a report is sent, used to schedule the next one
 - `tud_hid_set_report_cb()` and `tud_hid_get_report_cb()`: handle host requests for report data
 
-Your main loop calls `tud_task()` repeatedly to let TinyUSB process USB events. When the device is ready and the host is polling, you call `tud_hid_report()` to send gamepad data.
+Your main loop must call `tud_task()` again and again, because TinyUSB does its work inside that call. To send gamepad data you call `tud_hid_report()`. This call only places the report in the endpoint's buffer. The host collects it when it next asks, up to 8 ms later.
 
 ### HID Class Overview
 
-The Human Interface Device (HID) class covers any device that takes input from or provides output to a human: keyboards, mice, joysticks, gamepads, knobs, sliders, and even some vendor-specific devices. The key feature of HID is that it is self-describing. The HID report descriptor tells the host exactly what data the device sends and how to interpret each bit and byte. This is why HID devices work without custom drivers: the operating system reads the report descriptor and builds a generic input handler automatically.
+The HID class covers devices that a person operates: keyboards, mice, joysticks, gamepads, knobs and sliders. Its strength is one extra descriptor, the HID report descriptor, in which the device states what each bit and byte of its reports means. The operating system reads it and builds the input handler by itself. This is why a HID device needs no driver of its own.
 
 ## HID Report Descriptor
 
 <InArticleAd />
 
 
-The HID report descriptor is a compact binary program written in a domain-specific language defined by the USB HID specification. Each item in the descriptor is a tag followed by data bytes. The tags describe the structure of the reports the device sends and receives.
+The gamepad sends 3 bytes every 8 ms. Without help, the host sees only three numbers. The report descriptor is the key to them: it says which bits are buttons, which bytes are axes, and what range each value has.
+
+```text
+ One report: 3 bytes
+
+    byte 0         byte 1         byte 2
+ ┌───────────┐  ┌───────────┐  ┌───────────┐
+ │ 0000 YXBA │  │  X axis   │  │  Y axis   │
+ └───────────┘  └───────────┘  └───────────┘
+  4 unused bits  -127 to 127    -127 to 127
+  4 button bits
+```
 
 ### Report Descriptor Concepts
 
-The descriptor uses a stack-based model with three types of items:
+The descriptor is a list of items. Each item is a tag byte followed by its data. Most items do not describe data themselves. They set a value that stays in force, and an `Input` item then creates the fields with the values in force at that moment. There are three kinds of item:
 
-- **Main items** define the data fields: `Input`, `Output`, `Feature`, and `Collection`
-- **Global items** set parameters that apply to all subsequent main items until changed: `Usage Page`, `Logical Minimum`, `Logical Maximum`, `Report Size`, `Report Count`
-- **Local items** apply only to the next main item: `Usage`, `Usage Minimum`, `Usage Maximum`
+- Global items stay in force until changed: `Usage Page`, `Logical Minimum`, `Logical Maximum`, `Report Size` (bits in one field), `Report Count` (number of fields).
+- Local items apply only to the next main item: `Usage`, `Usage Minimum`, `Usage Maximum`. A usage is a number that names what a field is for, such as "X axis" or "Button 2". A usage page is the list the number is taken from.
+- Main items create the fields or group them: `Input`, `Output`, `Feature`, `Collection`.
 
 ### Building the Gamepad Descriptor
 
-Our gamepad sends a 3-byte report: one byte for button states (4 buttons in the lower 4 bits, 4 bits of padding) and two bytes for the X and Y axes (signed 8-bit values each). Here is the descriptor byte by byte:
+Here is the descriptor for the 3-byte report, byte by byte:
 
 ```c
 static const uint8_t desc_hid_report[] = {
@@ -185,21 +185,17 @@ static const uint8_t desc_hid_report[] = {
 };
 ```
 
-Let's walk through each section:
+Read it from the top:
 
-**Usage Page (Generic Desktop) and Usage (Game Pad):** These two items tell the host this device belongs to the Generic Desktop page (page 0x01), and specifically it is a game pad (usage 0x05). The operating system uses this to route the device to the game controller subsystem.
-
-**Collection (Application):** Groups everything that follows into one logical device. Every HID report descriptor must start with a collection and end with End Collection.
-
-**Buttons section:** We switch to Usage Page 0x09 (Button). Usage Minimum 1 and Usage Maximum 4 define four buttons numbered 1 through 4. Each button is 1 bit (Report Size = 1), and there are 4 of them (Report Count = 4). The Input item flags 0x02 mean "Data, Variable, Absolute": the bits represent actual button states, not relative changes.
-
-**Padding:** The first byte has 4 button bits, leaving 4 bits unused. We declare 1 field of 4 bits with flags 0x03 (Constant), which tells the host to ignore these bits. Total so far: 1 byte.
-
-**Axes section:** We switch back to Usage Page 0x01 (Generic Desktop) and declare two usages: X (0x30) and Y (0x31). Each axis is a signed 8-bit value (Report Size = 8, Report Count = 2) with a range of -127 to 127. The Input item flags 0x02 again mean "Data, Variable, Absolute." Total: 2 more bytes, giving us 3 bytes per report.
+1. Usage Page (Generic Desktop) and Usage (Game Pad) say what the device is: usage 0x05 on page 0x01. The operating system then treats it as a game controller.
+2. Collection (Application) groups everything up to End Collection into one device.
+3. The buttons: Usage Page 0x09 (Button), with Usage Minimum 1 and Usage Maximum 4, names four buttons. Report Size 1 and Report Count 4 make four fields of 1 bit. The `Input` item creates them. Its flags 0x02 mean "Data, Variable, Absolute": each bit is the present state of one button.
+4. The padding: a report must be a whole number of bytes, and the buttons use only 4 bits. One field of 4 bits with the flag Constant (0x03) fills the byte and tells the host to ignore it. Total so far: 1 byte.
+5. The axes: back on Usage Page 0x01, two usages, X (0x30) and Y (0x31). Report Size 8 and Report Count 2 make two fields of 8 bits, each from -127 to 127. Total: $1 + 2 = 3$ bytes for each report.
 
 ### The Report Data Structure
 
-The report descriptor defines the binary layout. In C, we represent it as a packed struct:
+The firmware must send exactly the bytes that the descriptor promises. In C this is a packed struct. The word packed tells the compiler to add no empty bytes between the members:
 
 ```c
 typedef struct __attribute__((packed)) {
@@ -214,11 +210,11 @@ typedef struct __attribute__((packed)) {
 <InArticleAd />
 
 
-TinyUSB needs three things from you: a configuration header (`tusb_config.h`), a descriptors file (`usb_descriptors.c`), and the correct CMake setup. Let's build each one.
+TinyUSB needs three things from you: a configuration header (`tusb_config.h`), a descriptors file (`usb_descriptors.c`), and the correct CMake setup.
 
 ### tusb_config.h
 
-This header tells TinyUSB which features to enable at compile time:
+TinyUSB supports many classes, and each one costs memory. This header says which ones to build in:
 
 ```c
 #ifndef TUSB_CONFIG_H
@@ -250,7 +246,7 @@ This header tells TinyUSB which features to enable at compile time:
 
 ### usb_descriptors.c
 
-This file provides all the USB descriptors through TinyUSB callback functions. It is the longest file in the project, but each section is straightforward once you understand the descriptor hierarchy.
+This file holds every descriptor and the callbacks that hand them to TinyUSB. It is the longest file in the project, and it follows the four levels above: device, configuration with its interfaces and endpoints, then the strings.
 
 ```c
 #include "tusb.h"
@@ -316,7 +312,7 @@ static const uint8_t desc_hid_report[] = {
     0xC0               /* End Collection                         */
 };
 
-const uint8_t *tud_descriptor_hid_report_cb(uint8_t instance)
+const uint8_t *tud_hid_descriptor_report_cb(uint8_t instance)
 {
     (void)instance;
     return desc_hid_report;
@@ -427,17 +423,13 @@ const uint16_t *tud_descriptor_string_cb(uint8_t index, uint16_t langid)
 }
 ```
 
-Let's break down the key pieces:
+The parts, in the order of the file:
 
-**Device descriptor:** `bDeviceClass = 0x00` means the class is defined at the interface level, which is required for composite devices (a device with multiple different classes). The vendor ID 0xCafe is a test ID; for a real product you would register with USB-IF. The `iManufacturer`, `iProduct`, and `iSerialNumber` fields are indices into the string descriptor table.
-
-**Configuration descriptor:** The `TUD_CONFIG_DESCRIPTOR` macro generates the 9-byte configuration descriptor header. The total length includes the config header plus all interface/endpoint descriptors. The last parameter (100) is the max power in 2 mA units, so 100 means 200 mA.
-
-**CDC descriptor:** `TUD_CDC_DESCRIPTOR` generates the CDC ACM (Abstract Control Model) interface pair. CDC requires two interfaces: a communication interface (for control signals like line coding and DTR/RTS) and a data interface (for the actual serial data). The notification endpoint is interrupt IN, and the data endpoints are bulk IN/OUT.
-
-**HID descriptor:** `TUD_HID_DESCRIPTOR` generates the HID interface with one interrupt IN endpoint. The polling interval is the last parameter (8 ms = 125 Hz). `HID_ITF_PROTOCOL_NONE` means this is not a boot-protocol keyboard or mouse; it uses the full report descriptor.
-
-**String descriptors:** USB strings are UTF-16LE encoded. The callback converts ASCII strings to UTF-16 on the fly. The serial number at index 3 is derived from the Pico's unique 64-bit flash ID, so each board has a distinct serial number.
+- Device descriptor. `bDeviceClass = 0x00` means "look at my interfaces to learn my class". A composite device must say this, because it has more than one class. The vendor ID 0xCafe is for tests only. A product that is sold needs a vendor ID from USB-IF, the body that publishes the USB standard. The fields `iManufacturer`, `iProduct` and `iSerialNumber` are index numbers into the string table.
+- Configuration descriptor. The `TUD_CONFIG_DESCRIPTOR` macro writes the 9-byte header. The total length must count this header and every interface and endpoint descriptor after it, because the host reads exactly that many bytes. The last parameter (100) is the maximum current in mA.
+- CDC descriptor. `TUD_CDC_DESCRIPTOR` writes the two interfaces of a serial port: one for control signals and one for the data. The notification endpoint is interrupt IN, and the data endpoints are bulk IN and OUT.
+- HID descriptor. `TUD_HID_DESCRIPTOR` writes the HID interface with one interrupt IN endpoint. Its last parameter is the polling interval, 8 ms. `HID_ITF_PROTOCOL_NONE` says that this is not a simple keyboard or mouse of the kind a PC can use before its operating system starts. The host must read the report descriptor.
+- String descriptors. USB text uses 16 bits for each character (UTF-16), so the callback widens each ASCII character. The serial number at index 3 comes from the unique 64-bit ID of the Pico's flash chip, so every board has its own.
 
 ## Gamepad Firmware
 
@@ -448,36 +440,26 @@ With the descriptors in place, the main firmware reads the joystick and buttons,
 
 ### Circuit Connections
 
+A thumb joystick is two potentiometers. Each gives a voltage between 0 V and 3.3 V that follows the position of the stick on one axis.
+
 ```text
- USB Gamepad Wiring
  ┌──────────────────┐    ┌──────────────┐
  │  Pico            │    │  Thumb       │
- │  GP26 (ADC0) ────┼────┤  Joystick   │
- │  GP27 (ADC1) ────┼────┤  VRx, VRy   │
- │  3V3 ────────────┼────┤  VCC        │
- │  GND ────────────┼────┤  GND        │
+ │  GP26 (ADC0) ────┼────┤  VRx         │
+ │  GP27 (ADC1) ────┼────┤  VRy         │
+ │  3V3 ────────────┼────┤  VCC         │
+ │  GND ────────────┼────┤  GND         │
  │                  │    └──────────────┘
  │  GP10 ─┤BTN A├── GND
  │  GP11 ─┤BTN B├── GND
  │  GP12 ─┤BTN X├── GND
  │  GP13 ─┤BTN Y├── GND
  │                  │
- │      USB ────────┼──── To PC (HID Gamepad)
+ │      USB ────────┼──── To PC
  └───────┤├─────────┘
 ```
 
-| Pico Pin | Component | Function |
-|----------|-----------|----------|
-| GP26 (ADC0) | Joystick VRx | X axis analog input |
-| GP27 (ADC1) | Joystick VRy | Y axis analog input |
-| GP10 | Button A | Digital input with pull-up |
-| GP11 | Button B | Digital input with pull-up |
-| GP12 | Button X | Digital input with pull-up |
-| GP13 | Button Y | Digital input with pull-up |
-| 3V3 | Joystick VCC | Power |
-| GND | Joystick GND, all button common | Ground |
-
-Each button connects between the GPIO pin and GND. We enable the internal pull-up resistors, so the pin reads high when released and low when pressed.
+Each button connects between the GPIO pin and GND. The firmware enables the internal pull-up resistors, so a pin reads high when released and low when pressed. Power the joystick from 3V3 and never from 5 V: an ADC pin must not see more than 3.3 V.
 
 ### main.c
 
@@ -700,33 +682,31 @@ int main(void)
 
 ### How the Firmware Works
 
-**ADC reading:** `adc_setup()` initializes the ADC peripheral and configures GP26 and GP27 as analog inputs. `adc_read_channel()` selects the input and performs a single 12-bit conversion (0 to 4095). The `adc_to_axis()` function centers the value, applies a dead zone, and scales to the signed 8-bit range expected by the HID descriptor.
+Reading the stick. `adc_read_channel()` selects an input and makes one 12-bit conversion, a number from 0 to 4095. The report needs a signed number from -127 to 127 with 0 at rest, so `adc_to_axis()` does three things: it subtracts the midpoint 2048, applies a dead zone, and scales the result. With numbers, a reading of 3072 gives $3072 - 2048 = 1024$, and $1024 \times 127 / 2048 = 63$, half of full travel.
 
-**Dead zone:** Analog joysticks rarely rest exactly at the electrical midpoint. Without a dead zone, the gamepad would constantly report small random movements even when untouched. The `DEAD_ZONE` constant of 100 (out of 2048 from center) means roughly the inner 5% of travel is treated as zero.
+The dead zone. A joystick does not rest exactly at the electrical midpoint, and its reading moves a little by itself. Without a dead zone the gamepad would report small movements when nobody touches it. Every reading closer than 100 counts to the midpoint becomes 0. That is $100 / 2048$, about the inner 5% of the travel.
 
-**Button reading:** Each button pin is configured as input with an internal pull-up. When the button is pressed, the pin is pulled to GND, so `gpio_get()` returns 0. The `buttons_read()` function packs all four states into the lower 4 bits of a byte, matching the HID report descriptor layout.
+Reading the buttons. A pressed button connects its pin to GND, so `gpio_get()` returns 0. `buttons_read()` turns this over and packs the four states into the lower 4 bits of one byte, as the report descriptor promises.
 
-**Report sending:** `send_gamepad_report()` reads all inputs, builds the report struct, and calls `tud_hid_report()` if the data changed or if a previous transfer just completed. The `tud_hid_report_complete_cb()` callback sets `report_pending = true`, which triggers the next report in the following main loop iteration. This creates a continuous stream of reports at the polling rate negotiated during enumeration.
+Sending the report. `send_gamepad_report()` reads all inputs and calls `tud_hid_report()` if the data changed or the previous report has gone. TinyUSB calls `tud_hid_report_complete_cb()` when the host has collected a report. The callback sets `report_pending = true`, and the main loop then prepares the next report. So the host receives a fresh report each time it asks.
 
-**CDC debug:** The `cdc_debug_print()` function formats the current report data as text and writes it to the CDC interface. This lets you open a serial terminal (PuTTY, minicom, or the Arduino serial monitor) and see live button/axis values. The debug output runs at 4 Hz (every 250 ms), much slower than the HID reports, so it does not interfere with gamepad performance.
+Debug text. `cdc_debug_print()` writes the present report as text to the serial port every 250 ms, much slower than the HID reports. Open a serial terminal (PuTTY, minicom, or the Arduino serial monitor) to see the button and axis values.
 
 ## Adding CDC Debug Output
 
 <InArticleAd />
 
 
-Making the gamepad a composite device (HID + CDC) requires no extra hardware. The RP2040's USB controller supports multiple endpoints, and TinyUSB handles the composite descriptor automatically. You already set `CFG_TUD_CDC 1` in tusb_config.h and included the CDC descriptor in the configuration descriptor.
+The second function needs no extra hardware. You already set `CFG_TUD_CDC 1` in `tusb_config.h` and placed the CDC descriptor inside the configuration descriptor. When you plug in the device, the PC shows two things:
 
-When you plug the composite device into a PC, two things appear:
+- A game controller (HID interface), in the game controller settings of the operating system
+- A serial port (CDC interface): a COM port on Windows, /dev/ttyACM on Linux, or /dev/cu.usbmodem on macOS
 
-- A game controller (HID interface): visible in the OS game controller settings
-- A serial port (CDC interface): visible as a COM port on Windows, /dev/ttyACM on Linux, or /dev/cu.usbmodem on macOS
-
-The CDC interface is invaluable during development. You can print raw ADC values to verify wiring, check button debounce timing, log descriptor enumeration events, and monitor report send rates. Once the gamepad works correctly, you can disable the debug output or remove `CFG_TUD_CDC` entirely to simplify the device.
+Use the serial port while you develop: print raw ADC values to check the wiring, or count the reports sent. When the gamepad works, you can remove the debug output, or set `CFG_TUD_CDC` to 0 and remove the CDC descriptor.
 
 ### CDC Callbacks
 
-TinyUSB provides optional CDC callbacks for line coding changes and DTR/RTS signals. For simple debug output, you do not need to implement them. The default behavior accepts any baud rate and ignores control signals. If you want to detect when a terminal connects (DTR asserted), you can implement `tud_cdc_line_state_cb()`:
+The CDC callbacks are optional. Without them, TinyUSB accepts any baud rate and ignores the control signals. One is useful: a terminal program raises the DTR signal (data terminal ready) when it opens the port, and `tud_cdc_line_state_cb()` tells you so:
 
 ```c
 void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts)
@@ -758,7 +738,7 @@ void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts)
     - pico-gamepad.uf2
 </FileTree>
 
-The project is flat with all source files in the root directory. `pico_sdk_import.cmake` is copied from the Pico SDK (the standard practice for Pico projects). The build directory is created by CMake and contains the final `.uf2` file you drag onto the Pico.
+All source files are in one directory. `pico_sdk_import.cmake` is copied from the Pico SDK. CMake creates the build directory, which holds the final `.uf2` file that you copy to the Pico.
 
 ## CMakeLists.txt and Build
 
@@ -808,12 +788,12 @@ pico_enable_stdio_uart(pico-gamepad 0)
 pico_add_extra_outputs(pico-gamepad)
 ```
 
-Key points in the CMakeLists.txt:
+What the libraries are for:
 
-- `tinyusb_device` and `tinyusb_board` provide the TinyUSB stack. These libraries are included in the Pico SDK, so no external downloads are needed.
-- `pico_unique_id` provides `pico_get_unique_board_id()` for generating the USB serial number.
-- `hardware_adc` provides the ADC functions for reading the joystick.
-- `pico_enable_stdio_usb` is set to 0 because we manage USB ourselves through TinyUSB. Enabling Pico SDK's stdio USB would conflict with our custom TinyUSB device.
+- `tinyusb_device` and `tinyusb_board` are TinyUSB. They come with the Pico SDK, so there is nothing to download.
+- `pico_unique_id` gives `pico_get_unique_board_id()` for the USB serial number.
+- `hardware_adc` gives the ADC functions for the joystick.
+- `pico_enable_stdio_usb` is set to 0. The SDK's own USB serial port (the one `printf` used in earlier projects) brings its own descriptors, and a device can have only one set.
 
 ### Build Commands
 
@@ -936,7 +916,12 @@ Once the firmware is flashed, verify that the gamepad works on your operating sy
 <InArticleAd />
 
 
-You built a USB HID gamepad from scratch on the RP2040 using TinyUSB. You wrote a HID report descriptor by hand, defining 4 buttons and 2 analog axes. You configured TinyUSB as a composite device with HID and CDC interfaces, giving you both gamepad functionality and a debug serial port. The firmware reads joystick axes via ADC with dead zone compensation, reads buttons with internal pull-ups, and streams HID reports at 125 Hz. The device works on Windows, macOS, and Linux without any custom drivers. You now understand the USB descriptor hierarchy (device, configuration, interface, endpoint), HID report descriptor format (usage pages, logical ranges, report sizes), and the TinyUSB callback architecture for building custom USB devices.
+You built a USB gamepad on the RP2040 with TinyUSB, and it works on Windows, macOS and Linux with no driver of its own. The ideas to keep:
+
+- A USB device answers the host's questions with descriptors, in four levels: device, configuration, interface, endpoint.
+- The host asks and the device answers. An interrupt endpoint is one that the host asks at a fixed interval, here every 8 ms.
+- A HID report descriptor states what each bit of a report means. The struct in the firmware must match it bit for bit.
+- A composite device carries more than one function on one cable, here a gamepad and a debug serial port.
 
 <EmbeddedProgrammingRpiPicoComments />
 

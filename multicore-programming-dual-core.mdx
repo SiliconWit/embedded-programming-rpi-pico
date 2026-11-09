@@ -25,12 +25,12 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingRpiPicoComments from '../../../../components/embedded-programming-rpi-pico/EmbeddedProgrammingRpiPicoComments.astro';
 
-Most microcontrollers force you to interleave tasks on a single core, juggling interrupts and state machines to keep everything responsive. The RP2040 gives you two independent Cortex-M0+ cores with dedicated hardware for safe communication between them. In this lesson, Core 0 runs a waveform generator that outputs audio samples at a fixed rate while Core 1 reads button presses and sends frequency change commands through the inter-core FIFO. Neither core ever waits for the other, and the audio never glitches. #Multicore #DualCore #RP2040
+When one processor must make a sound and read buttons at the same time, each job delays the other. The tone clicks while the program checks a button, or a press is missed while the program makes the tone. The RP2040 has two processor cores, so each job can have a core of its own. The difficulty then moves to another place: the two cores share one memory, and data that both of them change can be damaged with no error message. In this lesson Core 0 makes the audio samples and Core 1 reads four buttons. You send commands from one core to the other through a hardware queue, and you protect shared data with a lock. #Multicore #DualCore #RP2040
 
 ## What We Are Building
 
 <Card title="Dual-Core Tone Synthesizer" icon="star">
-A two-core audio synthesizer. Core 0 generates square and sawtooth waveforms at a configurable frequency, outputting to a piezo buzzer via PWM. Core 1 scans four push buttons and sends note commands to Core 0 through the hardware mailbox FIFO. Spinlocks protect a shared configuration struct for more complex parameters. The result is glitch-free audio with responsive input, demonstrating real parallel execution.
+A two-core audio synthesizer. Core 0 generates a square wave or a sawtooth wave at the frequency of a note and sends it to a piezo buzzer through PWM. Core 1 scans four push buttons and sends note commands to Core 0 through the FIFO, a small hardware queue between the cores (first in, first out). A mutex, a lock that only one core can hold at a time, protects a shared settings struct. The tone stays clean while you press buttons, because each job has its own core.
 </Card>
 
 **Project specifications:**
@@ -40,7 +40,7 @@ A two-core audio synthesizer. Core 0 generates square and sawtooth waveforms at 
 | Core 0 Task | Waveform generation (PWM audio output) |
 | Core 1 Task | Button scanning and note selection |
 | Inter-Core Comm | Hardware FIFO (32-bit mailbox) |
-| Shared Data | Configuration struct protected by spinlock |
+| Shared Data | Configuration struct protected by mutex |
 | Audio Output | PWM on GP18, connected to piezo/speaker |
 | Waveforms | Square wave, sawtooth wave |
 | Note Range | C4 (262 Hz) through C5 (523 Hz) |
@@ -52,7 +52,7 @@ A two-core audio synthesizer. Core 0 generates square and sawtooth waveforms at 
 | 1 | Raspberry Pi Pico | 1 | From previous lessons |
 | 2 | Piezo buzzer or small speaker | 1 | Passive piezo preferred |
 | 3 | Push buttons | 4 | Momentary tactile switches |
-| 4 | 10K ohm resistors | 4 | Pull-down for buttons (or use internal pull-ups) |
+| 4 | 10K ohm resistors | 4 | Not needed with the internal pull-ups, which this code uses |
 | 5 | Breadboard + jumper wires | 1 set | |
 
 ## RP2040 Dual-Core Architecture
@@ -60,21 +60,15 @@ A two-core audio synthesizer. Core 0 generates square and sawtooth waveforms at 
 <InArticleAd />
 
 
-The RP2040 contains two ARM Cortex-M0+ cores running at 125 MHz. At reset, only Core 0 executes. Core 1 sits in a low-power sleep state, waiting for a launch sequence. Your `main()` function runs on Core 0, and you explicitly start Core 1 whenever you are ready.
+The RP2040 contains two ARM Cortex-M0+ cores running at 125 MHz. At reset, only Core 0 runs. Core 1 sleeps until you start it. Your `main()` function runs on Core 0.
 
-Both cores share the same address space: they see the same flash, SRAM, and peripherals. There is no memory protection between them. This means both cores can read and write any variable, any peripheral register, and any memory address. The shared memory model makes communication simple, but it also means you must be deliberate about synchronization when both cores access the same data.
+Both cores see the same flash, the same RAM and the same peripherals, and nothing stops one core from writing where the other is working. This makes it easy to pass data: both cores can use the same variable. It is also the danger. Think of two clerks who update one paper ledger. Each reads the balance, adds a payment, and writes the new balance. If both read before either writes, one payment is lost. Two cores that change one variable lose updates in the same way, and the program shows no error.
 
-The RP2040 provides three hardware mechanisms for safe dual-core operation:
-
-| Mechanism | Purpose | API |
-|-----------|---------|-----|
-| Inter-core FIFO | Pass 32-bit messages between cores | `multicore_fifo_push_blocking()`, `multicore_fifo_pop_blocking()` |
-| Hardware spinlocks | 32 hardware locks for mutual exclusion | `spin_lock_init()`, `spin_lock_blocking()`, `spin_unlock()` |
-| Software mutex | Higher-level lock built on spinlocks | `mutex_init()`, `mutex_enter_blocking()`, `mutex_exit()` |
+So the rule for this lesson is: data that both cores change needs one of three tools. The inter-core FIFO passes short messages from one core to the other. A spinlock protects a few instructions. A mutex protects an update that takes longer.
 
 ### Launching Core 1
 
-The Pico SDK makes launching Core 1 straightforward. You pass a function pointer, and Core 1 begins executing that function:
+You give `multicore_launch_core1()` the name of a function, and Core 1 starts to run that function:
 
 ```c
 #include "pico/multicore.h"
@@ -98,44 +92,34 @@ int main() {
 }
 ```
 
-The function you pass to `multicore_launch_core1()` must never return. If it does, Core 1 will enter a fault state. Always structure it as an infinite loop.
-
-Behind the scenes, the launch mechanism uses the inter-core FIFO to send a startup sequence to Core 1: the vector table address, stack pointer, and entry point. Core 1's bootrom code listens for this sequence and jumps to your function once it receives valid parameters.
+The function you pass to `multicore_launch_core1()` must never return. If it does, Core 1 will enter a fault state. Always write it as an infinite loop.
 
 ### Stack and Memory
 
-Core 1 gets its own stack, allocated from the default Pico SDK linker script. The default Core 1 stack size is 4 KB. If your Core 1 function uses deep recursion or large local arrays, you can increase it by defining `PICO_CORE1_STACK_SIZE` before including the SDK headers:
+The stack is the memory where a function keeps its local variables. Each core needs its own, or the two would overwrite each other. The default Core 1 stack size is 2 KB (`PICO_CORE1_STACK_SIZE` defaults to `PICO_STACK_SIZE`, which is 0x800). If your Core 1 function uses large local arrays or functions that call themselves, you can increase it up to 4 KB, the size of the RAM bank that holds this stack. Define `PICO_CORE1_STACK_SIZE` for the whole build in `CMakeLists.txt`, because the stack is allocated inside the SDK's own source file and a `#define` in your `main.c` does not reach it:
 
-```c
-#define PICO_CORE1_STACK_SIZE 8192
-#include "pico/multicore.h"
+```cmake
+target_compile_definitions(multicore_synth PRIVATE PICO_CORE1_STACK_SIZE=4096)
 ```
 
-Both cores share the same 264 KB of SRAM. Global and static variables are accessible from either core. Local variables live on each core's separate stack.
+Either core can reach global and static variables, so these are the ones that need protection. Local variables live on each core's own stack and need none.
 
 ## Inter-Core FIFO
 
 <InArticleAd />
 
 
-Each RP2040 core has a hardware mailbox FIFO that can hold up to 8 words of 32-bit data. Core 0 pushes to Core 1's FIFO, and Core 1 pushes to Core 0's FIFO. These are separate, unidirectional channels.
+The safest way to share data is not to share it: one core puts a message in a queue and the other takes it out. The hardware takes care that a message is never half written. The RP2040 has two such queues, one for each direction. Each holds up to 8 messages of 32 bits. To push is to put a message in. To pop is to take the oldest message out.
 
 ```text
- Inter-Core FIFO Communication
- ┌──────────────┐         ┌──────────────┐
- │   Core 0     │         │   Core 1     │
- │  (Waveform   │         │  (Button     │
- │   generator) │         │   scanner)   │
- │              │  push   │              │
- │  FIFO_WR ────┼────────>│  FIFO_RD     │
- │              │  8 words│              │
- │              │         │              │
- │  FIFO_RD <───┼─────────┤  FIFO_WR     │
- │              │  8 words│              │
- │              │  push   │              │
- └──────────────┘         └──────────────┘
-  Unidirectional channels, hardware-backed
-  No cache coherency issues (separate FIFOs)
+ ┌──────────────┐  queue, 8 words  ┌──────────────┐
+ │   Core 0     │                  │   Core 1     │
+ │  (waveform   │ push         pop │  (button     │
+ │   generator) ├─────────────────>│   scanner)   │
+ │              │                  │              │
+ │              │ pop         push │              │
+ │              │<─────────────────┤              │
+ └──────────────┘  queue, 8 words  └──────────────┘
 ```
 
 ```c
@@ -149,7 +133,7 @@ uint32_t value = multicore_fifo_pop_blocking();
 /* value is now 42 */
 ```
 
-The blocking variants stall the calling core if the FIFO is full (push) or empty (pop). Non-blocking variants are also available:
+A blocking call stops the calling core until it can finish: a push waits while the FIFO is full, and a pop waits while it is empty. A core that must keep to a schedule cannot wait like this, so there are calls that give up or only look:
 
 ```c
 /* Returns true if a value was successfully pushed (FIFO not full) */
@@ -163,20 +147,38 @@ if (available) {
 }
 ```
 
-The FIFO is ideal for sending simple commands and small data values. For our synthesizer project, Core 1 will push a 32-bit word that encodes both the note frequency and the waveform type. Core 0 pops these commands and adjusts its audio output.
+In the synthesizer, Core 1 pushes one 32-bit word that holds both the note frequency and the waveform type. Core 0 pops these commands and changes its audio output.
 
 ### FIFO Limitations
 
-The FIFO is 8 words deep. If the sender pushes faster than the receiver pops, the FIFO fills up and the sender blocks. For high-throughput data sharing, use shared memory with a spinlock or mutex instead. The FIFO is best for infrequent control messages, not continuous data streams.
+The FIFO holds only 8 words. If the sender pushes faster than the receiver pops, the FIFO fills and a blocking push stops the sender. So use the FIFO for commands that are sent now and then. For a steady flow of data, use shared memory with a lock.
 
 ## Spinlocks
 
 <InArticleAd />
 
 
-The RP2040 has 32 hardware spinlocks (SIO_SPINLOCK0 through SIO_SPINLOCK31). A spinlock is a single-bit lock backed by hardware: reading the spinlock register atomically tests and sets the lock. If the lock was free, the read returns nonzero and the caller now owns it. If the lock was already held, the read returns zero.
+A statement such as `shared_counter++` looks like one action, but the processor does it in three: load the value, add 1, store the result. If the other core does the same three steps in between, one update is lost:
 
-The Pico SDK provides a clean API:
+```text
+   shared_counter = 5 at the start
+ ┌───────────────────┐  ┌───────────────────┐
+ │ Core 0            │  │ Core 1            │
+ │ 1. load  (gets 5) │  │                   │
+ │                   │  │ 2. load  (gets 5) │
+ │ 3. add 1 (has 6)  │  │                   │
+ │                   │  │ 4. add 1 (has 6)  │
+ │ 5. store 6        │  │                   │
+ │                   │  │ 6. store 6        │
+ └───────────────────┘  └───────────────────┘
+   shared_counter = 6: one addition is lost
+```
+
+A lock prevents this. A core takes the lock, does its three steps, and releases the lock. The other core must wait until then. The piece of code between taking and releasing is called the critical section.
+
+The lock itself must not have the same weakness, so the RP2040 builds it in hardware. It has 32 spinlocks (SIO_SPINLOCK0 through SIO_SPINLOCK31). Reading a spinlock register tests the lock and takes it in one step that nothing can split (an atomic step). If the lock was free, the read returns nonzero and the caller now owns it. If the lock was already held, the read returns zero.
+
+The Pico SDK wraps this in a few calls:
 
 ```c
 #include "hardware/sync.h"
@@ -195,20 +197,25 @@ shared_counter++;
 spin_unlock(lock, saved_irq);
 ```
 
-When a core calls `spin_lock_blocking()`, two things happen: interrupts are disabled on that core (preventing deadlocks with ISRs), and the core spins in a tight loop reading the spinlock register until the lock becomes available. The returned `saved_irq` value is passed to `spin_unlock()` to restore the previous interrupt state.
+When a core calls `spin_lock_blocking()`, two things happen:
+
+- Interrupts are disabled on that core. Without this, an interrupt handler on the same core could ask for the lock that its own core already holds, and wait for ever. This is a deadlock.
+- The core reads the spinlock register again and again (it "spins") until the lock is free.
+
+The returned `saved_irq` value is passed to `spin_unlock()`, which puts the interrupts back as they were.
 
 ### When to Use Spinlocks
 
-Spinlocks are appropriate when the critical section is very short (a few instructions). The waiting core burns CPU cycles spinning, so you do not want to hold a spinlock while doing lengthy computation or I/O. For our synthesizer, we use a spinlock to protect a small configuration struct that both cores read and write.
+Use a spinlock when the critical section is a few instructions long. The waiting core does no useful work while it spins, and the holding core has its interrupts off, so never hold a spinlock during a long calculation or while you wait for a device.
 
-The Pico SDK reserves some spinlock numbers for internal use (the striped lock allocator, for example). Always use `spin_lock_claim_unused()` rather than hardcoding a spinlock number.
+The Pico SDK keeps some spinlock numbers for its own use. Always ask for a free one with `spin_lock_claim_unused()` and do not write a spinlock number into your code.
 
 ## Mutex
 
 <InArticleAd />
 
 
-A mutex is a software construct built on top of spinlocks. The difference is that a mutex can safely be held for longer periods. When a mutex is contended, the waiting core still spins, but the implementation is designed for the common case where the lock is uncontended.
+A mutex (from "mutual exclusion") is a lock for work that takes longer. It is built from a spinlock, but the spinlock is held only for the few instructions that record which core owns the mutex. A core that finds the mutex taken does not spin with its interrupts off. It rests until the owner releases the mutex (the `WFE` instruction, wait for event) and then tries again.
 
 ```c
 #include "pico/mutex.h"
@@ -230,7 +237,7 @@ void update_config(void) {
 }
 ```
 
-The Pico SDK also provides `mutex_try_enter()`, which returns immediately with a boolean indicating whether the lock was acquired. This is useful when you want to avoid stalling a real-time loop:
+A core that makes sound cannot wait for a lock: every sample it sends late is heard. For such a loop there is `mutex_try_enter()`, which returns at once and says whether it got the lock:
 
 ```c
 if (mutex_try_enter(&config_mutex, NULL)) {
@@ -241,25 +248,18 @@ if (mutex_try_enter(&config_mutex, NULL)) {
 /* If the lock was held, skip the update and try again next iteration */
 ```
 
-For our synthesizer project, the mutex protects the shared configuration struct. Core 1 writes new settings when a button is pressed, and Core 0 reads them on every audio sample cycle.
+In the synthesizer, the mutex protects the shared settings struct. Core 1 writes the waveform setting after a long press, and Core 0 reads it on every audio sample with `mutex_try_enter()`.
 
 ## The Synthesizer Project
 
 <InArticleAd />
 
 
-The dual-core synthesizer divides work cleanly between the two cores:
-
-| Core | Responsibility | Timing |
-|------|---------------|--------|
-| Core 0 | Audio waveform generation, PWM output | Runs a tight loop at the audio sample rate |
-| Core 1 | Button scanning, note selection, FIFO commands | Scans buttons every 10 ms |
-
-Core 1 reads four buttons, debounces them, and sends the selected note frequency through the inter-core FIFO. Core 0 receives frequency commands, updates its waveform generator, and outputs audio samples to a PWM pin connected to a piezo buzzer.
+The work is divided by how urgent it is. Core 0 writes a new sample to the PWM about every 62 microseconds. Core 1 scans the buttons every 20 ms, which also hides contact bounce.
 
 ### Note Definitions
 
-We define four notes corresponding to the four buttons:
+Each button plays one note. A FIFO message is one 32-bit word, so two macros pack the frequency into its lower 16 bits and the waveform into its upper 16 bits, and two more take them out again:
 
 ```c
 #define NOTE_C4   262   /* Hz */
@@ -287,11 +287,11 @@ typedef enum {
 <InArticleAd />
 
 
-Core 0 generates audio by computing waveform samples and writing them to the PWM compare register at a fixed rate. The PWM peripheral acts as a simple DAC: a high PWM frequency (well above the audible range) with a varying duty cycle produces an analog-like voltage after filtering by the piezo buzzer's mechanical inertia.
+A pin can only be high or low, but sound needs levels in between. PWM (pulse width modulation) gives them: the pin switches much faster than anyone can hear, and the fraction of the time it is high (the duty cycle) sets the average voltage. The buzzer cannot follow the fast switching, so it moves with the average. Core 0 computes a new level, called a sample, 16,000 times a second and writes it to the PWM.
 
 ### PWM as Audio Output
 
-We configure the PWM to run at a high frequency (125 kHz) with a wrap value that gives us enough duty cycle resolution:
+The PWM counter counts from 0 to the wrap value and starts again. Here it wraps at 250, which gives a PWM frequency of 500 kHz and 250 possible levels:
 
 ```c
 #include "hardware/pwm.h"
@@ -313,11 +313,17 @@ void audio_pwm_init(void) {
 }
 ```
 
-With a 125 MHz system clock and a wrap value of 250, the PWM frequency is 125 MHz / 250 = 500 kHz, far above the audible range. The duty cycle ranges from 0 to 249, giving us 8 bits of effective resolution.
+With a 125 MHz system clock and a wrap value of 250, the PWM frequency is $125\ \text{MHz} / 250 = 500\ \text{kHz}$, far above what the ear can hear. The level goes from 0 to 249, which is close to 8 bits of resolution.
 
 ### Waveform Sample Computation
 
-Instead of lookup tables, we compute waveform samples directly from a phase accumulator. The phase accumulator increments by a step size proportional to the desired frequency:
+To make a note, the program must know where it is inside one cycle of the wave. It keeps this position in a 16-bit number called the phase: 0 is the start of a cycle and 65,535 is its end. For every sample it adds a fixed step to the phase. A 16-bit number that passes 65,535 starts again at 0, and this is the start of the next cycle. A larger step passes through the cycle faster, so the note is higher. This counter is called a phase accumulator. The step for a frequency $f$ in Hz is
+
+$$
+\text{step} = \frac{f \times 65536}{\text{sample rate}}
+$$
+
+For C4, $262 \times 65536 / 16000 = 1073$ (the fraction is dropped).
 
 ```c
 static volatile uint32_t current_freq = NOTE_C4;
@@ -348,15 +354,16 @@ uint8_t compute_sample(void) {
 }
 ```
 
-The square wave outputs full amplitude for the first half of each cycle and zero for the second half. The sawtooth ramps linearly from 0 to the maximum value. Both waveforms are computed from the 16-bit phase accumulator, so changing the frequency just changes the phase step size.
+The square wave is at the full level for the first half of each cycle (phase below 32,768) and at zero for the second half. The sawtooth rises in a straight line from 0 to the full level, in step with the phase. Both come from the same phase, so a new note needs only a new step.
 
 ## Circuit Connections
 
 <InArticleAd />
 
 
+Each button connects a pin to GND. The internal pull-up resistors hold the pins high, so a pressed button reads low.
+
 ```text
- Dual-Core Tone Synthesizer Wiring
  ┌──────────────────┐
  │  Raspberry Pi    │
  │  Pico            │
@@ -374,29 +381,13 @@ The square wave outputs full amplitude for the first half of each cycle and zero
  └───────┤├─────────┘
 ```
 
-### Button Wiring
-
-Four buttons connect to GP10 through GP13 with internal pull-ups enabled. Pressing a button pulls the pin low.
-
-| Button | GPIO Pin | Note |
-|--------|----------|------|
-| Button 1 | GP10 | C4 (262 Hz) |
-| Button 2 | GP11 | E4 (330 Hz) |
-| Button 3 | GP12 | G4 (392 Hz) |
-| Button 4 | GP13 | C5 (523 Hz) |
-
 ### Speaker Wiring
 
-| Component | Pico Connection |
-|-----------|-----------------|
-| Piezo buzzer (+) | GP18 |
-| Piezo buzzer (-) | GND |
-
-If using a small 8-ohm speaker instead of a piezo, place a 100 ohm resistor in series to limit current. The RP2040 GPIO can source about 12 mA, which is sufficient for a small piezo buzzer but not for driving a speaker directly at high volume.
+If you use a small 8 ohm speaker in place of the piezo, put a 100 ohm resistor in series to limit the current. An RP2040 pin can supply about 12 mA. That is enough for a small piezo buzzer and too little to drive a speaker loudly.
 
 ### Waveform Toggle
 
-Long-pressing Button 4 (holding it for over 1 second) toggles between square and sawtooth waveforms. This gives us two waveform modes without adding extra buttons.
+Hold Button 4 for more than 1 second and release it: the waveform changes between square and sawtooth.
 
 ## Complete Firmware
 
@@ -513,6 +504,7 @@ void core0_audio_loop(void) {
         }
 
         /* Also check mutex-protected config for waveform changes */
+        /* try_enter never waits: if Core 1 holds the lock, keep the old value */
         if (mutex_try_enter(&config_mutex, NULL)) {
             local_wave = shared_config.waveform;
             mutex_exit(&config_mutex);
@@ -640,19 +632,19 @@ int main() {
 
 ### How the Cores Cooperate
 
-The interaction between cores follows a simple pattern:
+Follow one button press through the program:
 
 <Steps>
-1. Core 1 scans buttons every 20 ms. When a button press is detected, it packs the note frequency and waveform type into a 32-bit command and pushes it to the inter-core FIFO.
+1. Core 1 scans the buttons every 20 ms. When it finds a new press, it packs the note frequency and the waveform type into one 32-bit command and pushes it to the FIFO.
 
-2. Core 0 runs a tight audio sample loop. At the top of each iteration, it checks if the FIFO has a pending command. If so, it pops the command, extracts the frequency and waveform, and recalculates the phase step.
+2. Core 0 runs the audio loop. At the top of each pass it asks whether the FIFO holds a command (`multicore_fifo_rvalid()`). Only then does it pop, so the pop never waits. It takes the frequency and waveform out of the command and computes the new phase step.
 
-3. Core 0 computes the next waveform sample using the phase accumulator and writes it to the PWM compare register. The PWM hardware converts the digital sample to a pulse-width-modulated signal that drives the piezo buzzer.
+3. Core 0 computes the next sample from the phase and writes it to the PWM, which drives the piezo buzzer.
 
-4. For waveform mode changes (triggered by a long press on Button 4), Core 1 also updates a shared configuration struct protected by a mutex. Core 0 reads this struct with `mutex_try_enter()` to avoid blocking the audio loop.
+4. After a long press on Button 4, Core 1 also writes the new waveform into the shared struct, inside the mutex. Core 0 reads the struct with `mutex_try_enter()`, so it never waits for the lock.
 </Steps>
 
-The FIFO carries time-critical note commands (note on, note off). The mutex-protected struct carries less urgent configuration changes. This two-channel approach keeps the audio loop responsive: it never blocks waiting for a mutex it cannot acquire.
+In both cases the audio core only looks and never waits.
 
 ## Building and Flashing
 
@@ -748,9 +740,14 @@ Implement a heartbeat system where Core 1 pushes a "heartbeat" value to the FIFO
 <InArticleAd />
 
 
-The RP2040's dual-core architecture lets you run two truly parallel tasks with no scheduling overhead and no context switching. Core 0 handles the time-critical audio generation loop while Core 1 manages the human-speed button interface. The hardware inter-core FIFO provides a lightweight, zero-copy channel for passing 32-bit commands between cores, and hardware spinlocks (exposed through the mutex API) protect shared data structures when both cores need read/write access.
+The RP2040 runs two jobs at the same time, one on each core. Here Core 0 keeps the audio timing and Core 1 works at the speed of a hand on a button. The cores share one memory, so data that both change needs a rule:
 
-The key design principle is to minimize contention. Use the FIFO for infrequent, small messages. Use `mutex_try_enter()` in real-time loops so the audio core never blocks. Keep shared state small and access it briefly. In the next lesson, you will explore DMA (Direct Memory Access) to move data between peripherals and memory without any CPU involvement, combining it with the multicore and PIO techniques you have learned so far.
+- Send short commands through the inter-core FIFO, which holds 8 words of 32 bits.
+- Protect a few instructions with a spinlock, and a longer update with a mutex.
+- In a loop that must keep its timing, only look: `multicore_fifo_rvalid()` and `mutex_try_enter()` never wait.
+- Keep shared data small and hold a lock for as short a time as you can.
+
+The next step is to move data with no processor work at all: see [DMA and high-speed data pipelines](/education/embedded-programming-rpi-pico/dma-high-speed-data-pipelines/).
 
 <EmbeddedProgrammingRpiPicoComments />
 

@@ -25,12 +25,12 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingRpiPicoComments from '../../../../components/embedded-programming-rpi-pico/EmbeddedProgrammingRpiPicoComments.astro';
 
-Six lessons of C, CMake, and manual register configuration have given you deep control over the RP2040. Now consider the alternative: flash MicroPython, open a REPL, type `machine.Pin(25, machine.Pin.OUT).toggle()`, and the LED blinks. No build system, no compilation, instant feedback. In this lesson you will rebuild the LED brightness controller from Lesson 2 in MicroPython, then compare the two versions line by line. You will see where Python matches C in capability, where it falls short in performance, and how to write C extension modules for the parts that need raw speed. #MicroPython #RapidPrototyping #RP2040
+Every change to a C program costs a build and a flash, about 40 seconds before you know whether the idea works. When you only want to check a sensor or try a setting, that wait slows you more than slow code does. MicroPython removes the wait: you type a line such as `machine.Pin(25, machine.Pin.OUT).toggle()` and the LED changes at once. The price is speed and memory. In this lesson you rebuild the LED brightness controller from the GPIO, PWM and analog lesson in MicroPython and compare it with the C version. You measure how much slower Python runs the same loop, and you learn which jobs to keep in C or to give to the PIO hardware. #MicroPython #RapidPrototyping #RP2040
 
 ## What We Are Building
 
 <Card title="Rapid Sensor Dashboard" icon="star">
-A reimplementation of the Lesson 2 LED brightness controller in MicroPython, extended into a sensor dashboard. The potentiometer controls LED brightness via PWM, the on-chip temperature sensor feeds a moving average, and all readings display on the REPL with formatted output. You will also write PIO programs in Python using the `rp2.StateMachine` class and benchmark the performance difference between Python and C for the same operations.
+The LED brightness controller, written again in MicroPython and extended with a temperature reading. The potentiometer sets the LED brightness through PWM. The temperature sensor inside the chip is read and averaged. All readings are printed on the REPL, the prompt where you type Python and the board answers at once (read, evaluate, print, loop). You also write a PIO program in Python with the `rp2.StateMachine` class, and you measure the speed of Python against C on the same loop.
 </Card>
 
 **Project specifications:**
@@ -43,79 +43,65 @@ A reimplementation of the Lesson 2 LED brightness controller in MicroPython, ext
 | REPL Interface | USB CDC serial at 115200 baud |
 | Benchmark | ADC sampling loop, C versus Python timing comparison |
 | Extension Module | Custom C module compiled into MicroPython firmware |
-| Parts | Reuse existing parts from Lesson 2 |
+| Parts | The parts of the GPIO, PWM and analog lesson |
 
 ### Bill of Materials
 
 | Ref | Component | Quantity | Notes |
 |-----|-----------|----------|-------|
 | 1 | Raspberry Pi Pico | 1 | From previous lessons |
-| 2 | LED + 220 ohm resistor | 1 | Reuse from Lesson 2 |
-| 3 | 10K potentiometer | 1 | Reuse from Lesson 2 |
-| 4 | Breadboard + jumper wires | 1 set | Same setup as Lesson 2 |
+| 2 | LED + 220 ohm resistor | 1 | From the LED brightness controller |
+| 3 | 10K potentiometer | 1 | From the LED brightness controller |
+| 4 | Breadboard + jumper wires | 1 set | The same circuit as before |
 
 ## What Is MicroPython?
 
 <InArticleAd />
 
 
-MicroPython is a lean implementation of Python 3 designed to run on microcontrollers. It is not the full CPython interpreter; instead, it compiles Python source code into a compact bytecode format and executes that bytecode on a small virtual machine. The entire runtime, including the compiler, VM, and a subset of the Python standard library, fits within about 256 KB of flash and runs with as little as 16 KB of RAM.
+A C program is translated on your PC into instructions for the processor, and only those instructions go to the board. MicroPython works the other way round: a program that understands Python is flashed to the board once, and after that you send it Python text. This program is called the interpreter. It is a small version of Python 3 made for microcontrollers. With its compiler and a part of the Python standard library it needs about 256 KB of flash and can run in 16 KB of RAM.
 
-The RP2040 port of MicroPython includes hardware-specific modules that map directly to the chip's peripherals. The `machine` module provides classes for `Pin`, `PWM`, `ADC`, `I2C`, `SPI`, and `Timer`. The `rp2` module exposes PIO functionality through the `StateMachine` class and the `@rp2.asm_pio` decorator. These are not generic abstractions; they give you access to the same hardware registers that the C SDK manipulates, just through a Python API.
+The RP2040 version has two modules for the hardware. The `machine` module has classes for `Pin`, `PWM`, `ADC`, `I2C`, `SPI`, and `Timer`. The `rp2` module gives PIO through the `StateMachine` class and the `@rp2.asm_pio` decorator. Both reach the same hardware registers that the C SDK uses.
 
-The fundamental tradeoff is execution speed versus development speed. A MicroPython loop that reads an ADC and sets a PWM duty cycle runs roughly 10 to 100 times slower than the equivalent C code. For many applications (sensor dashboards, configuration interfaces, test fixtures, protocol prototyping), this performance gap does not matter. The time saved in development, debugging, and iteration often outweighs the runtime cost.
+You trade running speed for working speed. A MicroPython loop that reads an ADC and sets a PWM duty cycle runs roughly 10 to 100 times slower than the same loop in C. For a display of sensor readings, a settings menu, a test rig or a first trial of a protocol, this does not matter, and the time you save while you develop is worth more.
 
 ### How It Works Internally
 
+The slowness has a clear cause: between your text and the hardware there are more steps than in C.
+
 ```text
- MicroPython Execution Pipeline
- ┌────────────────┐
- │  main.py       │  Your Python source
- │  (on flash)    │
- └───────┬────────┘
-         v
- ┌────────────────┐
- │  MicroPython   │  Runs on RP2040 itself
- │  Compiler      │  (not your PC)
- └───────┬────────┘
-         v
- ┌────────────────┐
- │  Bytecode      │  Compact instructions
- │  (.mpy)        │  in RAM
- └───────┬────────┘
-         v
- ┌────────────────┐
- │  MicroPython   │  Interprets bytecode
- │  VM            │  Calls C drivers
- └───────┬────────┘
-         v
- ┌────────────────┐
- │  RP2040 HW     │  Same registers as
- │  Peripherals   │  the Pico C SDK
- └────────────────┘
+ ┌──────────┐   ┌──────────┐   ┌──────────┐
+ │ main.py  ├──>│ compiler ├──>│ bytecode │
+ │ (text)   │   │ on Pico  │   │ in RAM   │
+ └──────────┘   └──────────┘   └────┬─────┘
+                                    v
+ ┌──────────┐   ┌──────────┐   ┌──────────┐
+ │ RP2040   │<──┤ C        │<──┤ virtual  │
+ │ hardware │   │ drivers  │   │ machine  │
+ └──────────┘   └──────────┘   └──────────┘
 ```
 
 <Steps>
-1. You write a `.py` file (or type directly into the REPL).
-2. The MicroPython compiler (running on the RP2040 itself) parses the source and emits bytecode.
-3. The MicroPython VM executes the bytecode, calling into C-level hardware drivers when you use `machine.Pin`, `machine.ADC`, and so on.
-4. Those C-level drivers interact with the same RP2040 peripheral registers that the Pico SDK uses.
+1. You write a `.py` file, or type a line into the REPL.
+2. The MicroPython compiler, which runs on the RP2040 itself, turns the text into bytecode: short instructions that are not processor instructions.
+3. The virtual machine (VM), a loop written in C, reads each bytecode instruction and does what it says. This reading is the extra work that makes Python slow.
+4. When you use `machine.Pin`, `machine.ADC` and so on, the VM calls drivers written in C, which use the same RP2040 registers as the Pico SDK.
 </Steps>
 
-The compilation step happens on the microcontroller, not on your PC. This is why MicroPython needs more flash and RAM than a bare-metal C program, but it also means there is no cross-compilation toolchain to install.
+The compiler runs on the microcontroller and not on your PC. This is why MicroPython needs more flash and RAM than a C program, and also why you have no toolchain to install.
 
 ## Flashing MicroPython Firmware
 
 <InArticleAd />
 
 
-The RP2040 uses a UF2 (USB Flashing Format) file to install firmware. MicroPython provides prebuilt UF2 images for the Raspberry Pi Pico.
+You install the interpreter once, as a UF2 file (USB Flashing Format), the same kind of file your C builds produce. The MicroPython project offers ready UF2 files for the Raspberry Pi Pico.
 
 <Steps>
 1. Download the latest MicroPython UF2 file from [micropython.org/download/RPI_PICO](https://micropython.org/download/RPI_PICO). Look for the "Releases" section and pick the latest stable `.uf2` file.
 2. Hold the **BOOTSEL** button on the Pico, then connect the USB cable to your computer. The Pico appears as a USB mass storage device named `RPI-RP2`.
 3. Drag and drop the `.uf2` file onto the `RPI-RP2` drive. The Pico will reboot automatically.
-4. The Pico now runs MicroPython. It no longer appears as a mass storage device; instead it presents a USB CDC serial port.
+4. The Pico now runs MicroPython. It no longer appears as a drive. It appears as a serial port over USB.
 </Steps>
 
 ### Verifying the Installation
@@ -159,7 +145,7 @@ Type "help()" for more information.
 
 ### REPL Basics
 
-The REPL (Read-Eval-Print Loop) is an interactive Python shell running directly on the RP2040. Try these commands to confirm hardware access:
+The REPL reads the line you type, runs it on the RP2040, prints the result, and waits for the next line. Try these lines to confirm that Python reaches the hardware:
 
 ```python
 >>> import machine
@@ -178,11 +164,11 @@ Press `Ctrl+C` to interrupt a running program. Press `Ctrl+D` for a soft reset, 
 <InArticleAd />
 
 
-The `machine` module is your primary interface to RP2040 hardware from MicroPython. It provides Python classes that wrap the same peripherals you configured with the C SDK in previous lessons.
+The `machine` module is how MicroPython reaches the RP2040 hardware. Each peripheral you set up with the C SDK has a Python class here.
 
 ### Pin
 
-The `Pin` class controls GPIO configuration and digital I/O.
+The `Pin` class sets up a GPIO pin and reads or writes it.
 
 ```python
 from machine import Pin
@@ -213,11 +199,11 @@ gpio_pull_up(14);
 bool state = gpio_get(14);
 ```
 
-The Python version is more concise because the `Pin` constructor handles initialization, direction, and pull configuration in a single call. The C version requires separate function calls for each step.
+The Python version is shorter because one call to `Pin(...)` does the initialization, the direction and the pull-up. C needs a call for each.
 
 ### PWM
 
-The `PWM` class configures a PWM output on any GPIO that supports it.
+The `PWM` class sets up a PWM output on a GPIO pin.
 
 ```python
 from machine import Pin, PWM
@@ -229,7 +215,7 @@ pwm.duty_u16(0)          # Turn off
 pwm.deinit()             # Release the PWM hardware
 ```
 
-In MicroPython, the duty cycle is always specified as a 16-bit value (0 to 65535), regardless of the underlying PWM resolution. The runtime maps this to the appropriate hardware wrap and level values. In C, you work directly with the slice's wrap value and set the compare level explicitly.
+In MicroPython the duty cycle is always a 16-bit value: 0 is always off and 65535 is always on, whatever the PWM frequency. MicroPython works out the wrap value and the level for you. In C you choose the wrap value and write the level yourself.
 
 ### ADC
 
@@ -247,7 +233,7 @@ raw_temp = temp_sensor.read_u16()
 ```
 
 :::note
-`read_u16()` returns a 16-bit value (0 to 65535) even though the RP2040 ADC is 12-bit. MicroPython scales the 12-bit reading up to fill the 16-bit range. To convert back to the original 12-bit value, right-shift by 4: `raw_12bit = raw >> 4`. To get voltage: `voltage = raw * 3.3 / 65535`.
+`read_u16()` returns a 16-bit value (0 to 65535), although the RP2040 ADC has 12 bits. MicroPython stretches the reading to the 16-bit range, so that the same code works on boards with other converters. The reading is not more exact for it. To get the 12-bit value back, shift right by 4: `raw_12bit = raw >> 4`. To get the voltage: `voltage = raw * 3.3 / 65535`. A reading of 32768 is 1.65 V.
 :::
 
 ## Rebuilding the LED Controller
@@ -255,11 +241,13 @@ raw_temp = temp_sensor.read_u16()
 <InArticleAd />
 
 
-The circuit is identical to Lesson 2: potentiometer wiper on GP26, LED (with 220 ohm resistor) on GP15. The only change is the firmware.
+The circuit is the one from [GPIO, PWM, and analog I/O](/education/embedded-programming-rpi-pico/gpio-pwm-analog-io/): the middle pin of the potentiometer on GP26, and the LED with its 220 ohm resistor on GP15. Only the program changes.
 
 ### Complete MicroPython Script
 
-Create a file called `main.py` on the Pico's filesystem. When MicroPython boots, it automatically executes `main.py` if it exists.
+The script does two things in a loop. It copies the potentiometer reading to the PWM duty cycle. It also reads the temperature sensor inside the chip. One temperature reading moves up and down by a degree or more from noise, so the script prints the average of the last 10 readings, a moving average, next to the single reading.
+
+Create a file called `main.py` on the Pico's filesystem. MicroPython runs `main.py` by itself each time it starts.
 
 ```python title="main.py"
 from machine import Pin, PWM, ADC
@@ -335,7 +323,7 @@ main()
 
 ### How It Maps to the C Version
 
-The structure mirrors the C firmware from Lesson 2 almost exactly. Here is a side-by-side comparison of the key operations:
+The structure is the same as in the C firmware. Operation by operation:
 
 | Operation | C SDK | MicroPython |
 |-----------|-------|-------------|
@@ -347,27 +335,24 @@ The structure mirrors the C firmware from Lesson 2 almost exactly. Here is a sid
 | Print output | `printf(...)` | `print("...".format(...))` |
 | Delay | `sleep_ms(200)` | `time.sleep_ms(50)` |
 
-The C version requires about 90 lines including headers, defines, and helper functions. The MicroPython version achieves the same result in about 55 lines. More importantly, you can modify the MicroPython version on the fly: change the filter size, adjust the print format, add a new sensor, all without recompiling or reflashing.
+The C version has about 90 lines and the MicroPython version about 70. The larger difference is in how you work. In MicroPython you can change the filter size, the print format or add a sensor, and see the result in seconds, with no build and no flash:
 
 ```text
- C SDK vs MicroPython Development
- ┌─────────────────┐  ┌──────────────────┐
- │  C SDK Workflow  │  │ MicroPython      │
- │                  │  │ Workflow          │
- │  Edit main.c    │  │ Edit main.py     │
- │       │         │  │       │          │
- │  cmake + make   │  │  (no build step) │
- │  (~30 sec build)│  │                  │
- │       │         │  │  Copy to Pico    │
- │  UF2 flash or   │  │  (instant)       │
- │  SWD upload     │  │       │          │
- │  (~5 sec)       │  │  Ctrl+D reboot   │
- │       │         │  │  (<1 sec)        │
- │  Test           │  │  Test            │
+ ┌──────────────────┐  ┌──────────────────┐
+ │  C SDK           │  │  MicroPython     │
  │                  │  │                  │
- │  Cycle: ~40 sec │  │  Cycle: ~3 sec   │
- └─────────────────┘  └──────────────────┘
-  10-100x faster execution  10x faster iteration
+ │  Edit main.c     │  │  Edit main.py    │
+ │       │          │  │       │          │
+ │  cmake + make    │  │  Copy to Pico    │
+ │  (about 30 s)    │  │  (about 1 s)     │
+ │       │          │  │       │          │
+ │  Flash the UF2   │  │  Ctrl+D restart  │
+ │  (about 5 s)     │  │  (under 1 s)     │
+ │       │          │  │       │          │
+ │  Test            │  │  Test            │
+ │                  │  │                  │
+ │  Cycle: ~40 s    │  │  Cycle: ~3 s     │
+ └──────────────────┘  └──────────────────┘
 ```
 
 ## PIO in MicroPython
@@ -375,13 +360,13 @@ The C version requires about 90 lines including headers, defines, and helper fun
 <InArticleAd />
 
 
-One of the most powerful features of MicroPython on the RP2040 is direct access to the Programmable I/O subsystem. In Lesson 3 you wrote a WS2812B driver as a `.pio` assembly file and compiled it with the SDK build system. In MicroPython, you write the PIO program directly in Python using the `@rp2.asm_pio` decorator.
+Python is too slow and too uneven to make a signal with microsecond timing. It does not need to: the PIO state machines are hardware, and they keep exact time once they are started, whichever language started them. In [PIO state machines](/education/embedded-programming-rpi-pico/pio-programmable-io-state-machines/) you wrote a WS2812B driver as a `.pio` file and built it with the SDK. In MicroPython you write the same PIO program inside a Python file.
 
 ### PIO Assembly in Python
 
-The `@rp2.asm_pio` decorator transforms a Python function into a PIO program. Each PIO instruction is written as a Python function call inside the decorated function. The decorator compiles these into the same 16-bit instruction words that the PIO hardware executes.
+A decorator is a line that begins with `@`, placed above a function, that changes what the function is. `@rp2.asm_pio` turns a Python function into a PIO program: each call inside the function becomes one PIO instruction, the same 16-bit instruction word that the `.pio` file produces.
 
-Here is the WS2812B driver rewritten in MicroPython PIO:
+Here is the WS2812B driver in MicroPython:
 
 ```python title="ws2812b_pio.py"
 import rp2
@@ -411,7 +396,7 @@ NUM_PIXELS = 8
 
 def put_pixel(grb):
     """Send a 24-bit GRB value to the state machine."""
-    sm.put(grb << 8, 24)
+    sm.put(grb, 8)  # Second argument: shift left by 8 so the 24 bits sit at the top
 
 def wheel(pos):
     """Color wheel: input 0-255, output (g, r, b) packed as GRB integer."""
@@ -436,7 +421,7 @@ while True:
 
 ### Mapping .pio Syntax to Python Decorator Syntax
 
-The table below shows how each element of the `.pio` file from Lesson 3 translates to the Python decorator:
+Each element of the `.pio` file has a matching form in Python:
 
 | `.pio` File Syntax | MicroPython Decorator Syntax |
 |---------------------|------------------------------|
@@ -449,16 +434,16 @@ The table below shows how each element of the `.pio` file from Lesson 3 translat
 | `.define public T1 2` | `T1 = 2` (regular Python variable) |
 | Autopull config in C init code | `autopull=True, pull_thresh=24` in decorator |
 
-The decorator parameters (`sideset_init`, `out_shiftdir`, `autopull`, `pull_thresh`) replace the configuration that you would set in C using `sm_config_set_sideset_pins()`, `sm_config_set_out_shift()`, and similar functions.
+The decorator parameters (`sideset_init`, `out_shiftdir`, `autopull`, `pull_thresh`) replace the settings that C makes with `sm_config_set_sideset_pins()`, `sm_config_set_out_shift()` and similar functions.
 
-The `rp2.StateMachine()` constructor replaces the C initialization sequence: it claims a PIO block and state machine, loads the program, sets the clock divider (via the `freq` parameter), and configures the pin mappings, all in a single call.
+The call `rp2.StateMachine()` replaces the C initialization: it takes a state machine, loads the program, sets the clock divider from the `freq` parameter, and assigns the pins.
 
 ## C vs Python: Side-by-Side Comparison
 
 <InArticleAd />
 
 
-To quantify the performance difference, here is a benchmark that counts how many ADC samples each language can read in one second.
+"Slower" is not a number you can design with. This test gives one: how many ADC samples can each language read in one second?
 
 ### MicroPython Benchmark
 
@@ -515,25 +500,27 @@ int main(void) {
 
 | Metric | C SDK | MicroPython | Ratio |
 |--------|-------|-------------|-------|
-| Lines of code (full project) | ~90 | ~55 | 1.6x fewer in Python |
-| Build time | ~5 seconds (cmake + make) | 0 (no build step) | Instant |
+| Lines of code (full project) | ~90 | ~70 | 1.3x fewer in Python |
+| Build time | ~30 seconds (cmake + make) | 0 (no build step) | Instant |
 | Flash usage | ~40 KB (.uf2) | ~650 KB (firmware) + ~2 KB (script) | 16x more |
 | RAM usage | ~8 KB | ~60 KB (interpreter + heap) | 7.5x more |
 | ADC loop speed | ~480,000 samples/sec | ~18,000 samples/sec | ~27x faster in C |
 | Development time (this project) | ~30 minutes | ~10 minutes | 3x faster in Python |
 
-The C version is dramatically faster for tight loops. The MicroPython version is dramatically faster to write, test, and modify. Neither is universally better; the right choice depends on what the project requires.
+Read the ADC row as times. In C one reading takes about 2 microseconds, which is the speed of the converter itself. In MicroPython one reading takes about 56 microseconds, and nearly all of that is the virtual machine at work. Your own board will give somewhat different numbers.
+
+Speed is one limit. The other is evenness. MicroPython stops from time to time to free memory that is no longer used (garbage collection), and such a stop can last a few milliseconds. A Python loop therefore cannot promise that every pass comes on time.
 
 ## Writing a C Extension Module
 
 <InArticleAd />
 
 
-When a specific function in your MicroPython project becomes a performance bottleneck, you can write it in C and compile it into the MicroPython firmware. This gives you Python-level convenience for most of the code and C-level speed for the critical path.
+Often one small function needs the speed and the rest of the program does not. You can write that one function in C and build it into the MicroPython firmware. Python then calls it by name, as it calls `machine.ADC`.
 
 ### Module Structure Overview
 
-A C extension module for MicroPython consists of three parts: the C function implementation, a module definition table, and a registration macro. Here is a minimal example that provides a fast ADC averaging function.
+A C extension module has three parts: the C function, a table that gives the function its Python name, and a macro that registers the module. This small example reads the ADC many times in C and returns the average.
 
 ```c title="modfastadc.c"
 #include "py/runtime.h"
@@ -541,7 +528,7 @@ A C extension module for MicroPython consists of three parts: the C function imp
 #include "hardware/adc.h"
 
 /* C implementation: read N ADC samples and return the average */
-STATIC mp_obj_t fastadc_average(mp_obj_t n_obj) {
+static mp_obj_t fastadc_average(mp_obj_t n_obj) {
     int n = mp_obj_get_int(n_obj);
     if (n <= 0 || n > 10000) {
         mp_raise_ValueError(MP_ERROR_TEXT("n must be 1 to 10000"));
@@ -553,14 +540,14 @@ STATIC mp_obj_t fastadc_average(mp_obj_t n_obj) {
     }
     return mp_obj_new_int(total / n);
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_1(fastadc_average_obj, fastadc_average);
+static MP_DEFINE_CONST_FUN_OBJ_1(fastadc_average_obj, fastadc_average);
 
 /* Module globals table */
-STATIC const mp_rom_map_elem_t fastadc_module_globals_table[] = {
+static const mp_rom_map_elem_t fastadc_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_fastadc) },
     { MP_ROM_QSTR(MP_QSTR_average), MP_ROM_PTR(&fastadc_average_obj) },
 };
-STATIC MP_DEFINE_CONST_DICT(fastadc_module_globals, fastadc_module_globals_table);
+static MP_DEFINE_CONST_DICT(fastadc_module_globals, fastadc_module_globals_table);
 
 /* Module definition */
 const mp_obj_module_t fastadc_module = {
@@ -595,18 +582,18 @@ The build produces a new `.uf2` file that includes your C module. Flash it to th
 >>> print(avg)
 ```
 
-This approach is useful for signal processing routines, fast sampling loops, or any computation where the Python overhead is unacceptable. For most application logic, pure MicroPython is fast enough.
+Use this for fast sampling loops and signal processing. For most program logic, plain MicroPython is fast enough.
 
 ## File Management with Thonny and mpremote
 
 <InArticleAd />
 
 
-MicroPython exposes a small filesystem on the Pico's flash memory (using littlefs). You can store Python scripts, configuration files, and data logs on this filesystem. Two tools are commonly used to manage files.
+MicroPython keeps a small filesystem in the part of the Pico's flash that the interpreter does not use. Your scripts, settings files and data logs live there. Two tools copy files to and from it.
 
 ### Thonny IDE
 
-Thonny is a beginner-friendly Python IDE with built-in MicroPython support. Install it from [thonny.org](https://thonny.org) or via your system package manager.
+Thonny is a Python editor for beginners that knows MicroPython. Install it from [thonny.org](https://thonny.org) or with your system package manager.
 
 <Steps>
 1. Open Thonny and go to **Tools > Options > Interpreter**.
@@ -617,11 +604,9 @@ Thonny is a beginner-friendly Python IDE with built-in MicroPython support. Inst
 6. Click the green **Run** button to execute the current script on the Pico.
 </Steps>
 
-Thonny is excellent for interactive development. You can edit a script, save it to the Pico, and run it immediately without leaving the IDE.
-
 ### mpremote (Command-Line Tool)
 
-For a terminal-based workflow, `mpremote` is the official MicroPython command-line tool. Install it with pip:
+If you prefer a terminal, `mpremote` is the command-line tool of the MicroPython project. Install it with pip:
 
 ```bash
 pip install mpremote
@@ -648,11 +633,11 @@ mpremote connect auto run benchmark_mp.py
 # Remove a file from the Pico
 mpremote connect auto rm :old_script.py
 
-# Soft reset the Pico
+# Hard reset the Pico (use soft-reset for a soft reset)
 mpremote connect auto reset
 ```
 
-The `mpremote` tool is scriptable, making it useful for automated testing and deployment workflows. You can chain commands:
+You can join commands with `+`:
 
 ```bash
 # Upload, reset, and connect to REPL in one command
@@ -671,40 +656,40 @@ A typical MicroPython project on the Pico looks like this:
   - sensor_utils.py
 </FileTree>
 
-`boot.py` runs first on every boot (used for low-level configuration like setting the CPU frequency). `main.py` runs immediately after `boot.py` and is where your application code goes. The `lib/` directory is on the module search path, so any `.py` file placed there can be imported by name.
+`boot.py` runs first at every start and is for low-level settings such as the CPU frequency. `main.py` runs directly after it and holds your program. MicroPython looks in `lib/` when you import, so any `.py` file there can be imported by name.
 
 ## When to Use MicroPython vs C
 
 <InArticleAd />
 
 
-Choosing between MicroPython and C is not an all-or-nothing decision. Many projects use MicroPython for prototyping and switch to C only when performance requirements demand it. Others ship MicroPython in production because the application never needs the speed that C provides.
+You do not have to choose one language for a whole project. Many projects begin in MicroPython and move a part to C only when a measurement shows the need. Others stay in MicroPython for good, because they never need the speed.
 
 ### Decision Framework
 
 | Factor | Favor MicroPython | Favor C SDK |
 |--------|-------------------|-------------|
-| **Timing requirements** | Tolerances above 1 ms | Microsecond or sub-microsecond precision |
-| **Iteration speed** | Rapid prototyping, frequent changes | Stable requirements, infrequent changes |
-| **Code complexity** | Logic-heavy (parsers, state machines, menus) | Compute-heavy (DSP, motor control loops) |
-| **Flash/RAM budget** | Plenty of room (RP2040 has 2 MB flash, 264 KB RAM) | Memory-constrained designs |
-| **Team experience** | Team knows Python, new to embedded | Team knows C, comfortable with SDK |
-| **Debugging** | REPL makes interactive debugging trivial | Printf debugging or SWD with GDB |
-| **Power consumption** | Not critical (USB-powered prototypes) | Battery-powered, need deep sleep optimization |
-| **PIO programs** | Same capability (decorator syntax) | Same capability (.pio files) |
+| Timing | Being a few milliseconds late does no harm | Microsecond timing, or a deadline that must always hold |
+| How often the code changes | Trials and frequent changes | Fixed requirements |
+| Kind of work | Logic (parsers, state machines, menus) | Calculation (signal processing, motor control loops) |
+| Flash and RAM | Room to spare (the Pico has 2 MB flash, 264 KB RAM) | Tight memory |
+| The team | Knows Python, new to embedded work | Knows C and the SDK |
+| Debugging | At the REPL, line by line | With `printf`, or a debug probe and GDB |
+| Power | Not critical (powered from USB) | Battery, with long deep sleep |
+| PIO programs | Same result (decorator) | Same result (`.pio` file) |
+
+A control loop that keeps a machine inside safe limits belongs on the C side: it must not wait for a pause of the interpreter.
 
 ### Hybrid Approach
 
-The C extension module technique from the previous section enables a hybrid approach: write the application in MicroPython and drop into C only for the functions that need it. This is particularly effective for projects where 90% of the code is configuration, user interface, or network communication (all fine in Python) and 10% is a tight sampling loop or signal processing routine (better in C).
+With a C extension module you can mix the two: write the program in MicroPython and write in C only the functions that need it. This suits a project in which most of the code is settings, user interface or network communication, and a small part is a fast sampling loop.
 
-PIO programs have the same performance in both languages because the PIO hardware executes independently of the CPU. A WS2812B driver written with `@rp2.asm_pio` produces identical timing to the `.pio` file compiled with the C SDK. The only difference is how you configure and start the state machine, which is a one-time cost at initialization.
+PIO programs give the same result from both languages, because the PIO hardware runs by itself once it is started. A WS2812B driver written with `@rp2.asm_pio` makes the same pulses as the `.pio` file built with the C SDK. Python is slower only in feeding it data.
 
 ## Experiments
 
 <InArticleAd />
 
-
-Try these modifications to deepen your understanding of MicroPython on the RP2040.
 
 <CardGrid>
 <Card title="Experiment 1: I2C Sensor Integration" icon="rocket">
@@ -723,6 +708,14 @@ Build a command-line menu system that accepts single-character commands from the
 Write a PIO program that counts rising edges on an input pin over a fixed time window. Use one state machine to generate a gating signal (high for exactly 1 second, then trigger an IRQ) and a second state machine to count pulses during that window. This technique can measure frequencies from a few Hz up to several MHz with cycle-exact accuracy.
 </Card>
 </CardGrid>
+
+## Summary
+
+- MicroPython puts an interpreter on the board. You send it text, so a change takes seconds and needs no build.
+- The price is speed, memory and evenness: about 27 times slower on the ADC loop, about 650 KB of flash, and short pauses for garbage collection.
+- The `machine` and `rp2` modules reach the same hardware as the C SDK.
+- Exact timing comes from hardware, not from the language: a PIO program makes the same pulses when Python starts it.
+- Measure first. Then move only the slow function to a C extension module.
 
 <EmbeddedProgrammingRpiPicoComments />
 

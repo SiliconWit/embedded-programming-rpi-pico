@@ -25,12 +25,12 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingRpiPicoComments from '../../../../components/embedded-programming-rpi-pico/EmbeddedProgrammingRpiPicoComments.astro';
 
-WS2812B NeoPixel LEDs require a precise 800 kHz signal with specific high and low pulse widths, down to 150 ns tolerance. Most microcontrollers handle this with tightly timed loops or DMA tricks, but the RP2040 has something better: Programmable I/O. In this lesson you will write a PIO assembly program that generates the WS2812B protocol with cycle-exact timing, freeing both CPU cores to do other work while the state machine streams pixel data autonomously. #PIO #WS2812B #StateMachines
+A strip of WS2812B colour LEDs (often sold as NeoPixel) reads its data from the length of each pulse on one wire, and a pulse that is 150 ns too long turns a 0 into a 1. If the processor makes these pulses in a loop and anything interrupts it for a moment, the strip flickers or shows the wrong colours. The RP2040 has a part made for this kind of work: PIO (programmable input/output), a set of very small processors that only move pins, each with timing that nothing can disturb. In this lesson you write a four-line PIO program that sends the WS2812B signal, while the main processor only supplies the colours. #PIO #WS2812B #StateMachines
 
 ## What We Are Building
 
 <Card title="WS2812B PIO LED Driver" icon="star">
-A PIO program that drives a strip of 8 WS2812B (NeoPixel) LEDs. The C code fills a pixel buffer and pushes color data to the PIO FIFO. The state machine handles all timing-critical signal generation. You will write the PIO assembly yourself, understanding each instruction and how the state machine executes it.
+A PIO program that drives a strip of 8 WS2812B LEDs. Your C code decides the colours and puts them in a short queue. The PIO hardware takes them from the queue and makes every pulse on the data wire. You write the PIO program yourself and follow it cycle by cycle.
 </Card>
 
 **Project specifications:**
@@ -38,7 +38,7 @@ A PIO program that drives a strip of 8 WS2812B (NeoPixel) LEDs. The C code fills
 | Parameter | Value |
 |-----------|-------|
 | Protocol | WS2812B (800 kHz NRZ) |
-| PIO Program Size | ~8 instructions |
+| PIO Program Size | 4 instructions |
 | LED Count | 8 pixels (expandable) |
 | Color Depth | 24-bit GRB per pixel |
 | Data Pin | GP2 (configurable) |
@@ -60,53 +60,44 @@ A PIO program that drives a strip of 8 WS2812B (NeoPixel) LEDs. The C code fills
 <InArticleAd />
 
 
-The RP2040 has two PIO blocks (PIO0 and PIO1), each containing four state machines. Every state machine is a simple, independent processor that runs a tiny program from a shared 32-instruction memory. These state machines execute one instruction per clock cycle and can toggle GPIO pins with cycle-exact timing.
+Many devices expect a signal whose timing is exact: WS2812B LEDs, audio converters, displays, serial links at unusual speeds. The usual way to make such a signal without special hardware is to switch the pin from code and count the time in a loop (this is called bit-banging). It has two costs. The CPU can do nothing else during the transfer, and any interrupt stretches a pulse.
 
-Why does this matter? Many communication protocols (WS2812B, I2S, SPI variants, UART at unusual baud rates) require precise signal timing. On a typical microcontroller you would bit-bang these protocols in a tight loop, locking the CPU for the entire transfer. PIO offloads that timing-critical work to dedicated hardware: you write a short assembly program, load it into a PIO block, start the state machine, and the CPU is free to do other things.
+PIO removes both. The RP2040 has two PIO blocks (PIO0 and PIO1), each with four state machines. A state machine is a very small processor that can do little more than move pins and shift bits. It runs a program of at most 32 instructions, one instruction in each clock cycle, and nothing interrupts it. You write the short program, start the state machine, and the CPU is free.
 
-Each state machine has:
+The CPU and the state machine work at different speeds, so they exchange data through a FIFO (first in, first out): a queue, like people waiting at a counter. The CPU puts 32-bit words in at one end when it has time. The state machine takes them from the other end when it needs them. If the queue is full, the CPU waits. If it is empty, the state machine waits.
+
+```text
+        CPU writes                          CPU reads
+            │                                   ▲
+       ┌────▼─────┐                       ┌─────┴────┐
+       │ TX FIFO  │                       │ RX FIFO  │
+       │ 4 words  │                       │ 4 words  │
+       └────┬─────┘                       └─────▲────┘
+       ┌────▼─────┐                       ┌─────┴────┐
+       │   OSR    │                       │   ISR    │
+       │shift out │                       │ shift in │
+       └────┬─────┘                       └─────▲────┘
+            ▼                                   │
+        output pins                         input pins
+```
+
+The drawing shows the two paths through one state machine. Each state machine has these parts:
 
 | Resource | Description |
 |----------|-------------|
-| Two 32-bit shift registers | Input Shift Register (ISR) and Output Shift Register (OSR) for serial data |
+| Two 32-bit shift registers | A shift register gives out (or takes in) a word one bit at a time. The Output Shift Register (OSR) sends, the Input Shift Register (ISR) receives |
 | Two 4-word FIFOs | TX FIFO (CPU to state machine) and RX FIFO (state machine to CPU) |
-| Two scratch registers | X and Y, used for counters, temporaries, and branch conditions |
-| A program counter | Points to the current instruction in the shared instruction memory |
-| A clock divider | Derives the state machine clock from the 125 MHz system clock |
-| Pin mappings | Configurable sets of GPIO pins for input, output, set, and sideset |
-
-```text
- PIO State Machine Architecture
- ┌─────────────────────────────────────┐
- │  PIO Block (PIO0 or PIO1)          │
- │  ┌───────────────────────────────┐  │
- │  │ Shared Instruction Memory     │  │
- │  │ (32 x 16-bit instructions)    │  │
- │  └───────────────────────────────┘  │
- │                                     │
- │  State Machine N (1 of 4):         │
- │  ┌────────┐  ┌─────┐  ┌────────┐  │
- │  │ TX FIFO│  │ OSR │  │  GPIO  │  │
- │  │ 4 words├─>│Shift├─>│  Pins  │  │
- │  │(CPU in)│  │ Out │  │ (out)  │  │
- │  └────────┘  └─────┘  └────────┘  │
- │  ┌────────┐  ┌─────┐  ┌────────┐  │
- │  │ RX FIFO│  │ ISR │  │  GPIO  │  │
- │  │ 4 words│<─┤Shift│<─┤  Pins  │  │
- │  │(CPU out│  │ In  │  │ (in)   │  │
- │  └────────┘  └─────┘  └────────┘  │
- │   X reg, Y reg, PC, Clock Div     │
- └─────────────────────────────────────┘
-```
-
-The TX and RX FIFOs decouple the CPU from the state machine. The CPU pushes data into the TX FIFO whenever it is ready; the state machine pulls from it at its own pace. If the FIFO is full, the CPU blocks (or polls). If the FIFO is empty, the state machine stalls until data arrives.
+| Two scratch registers | X and Y, for counting and for decisions |
+| A program counter | Points to the instruction that runs now |
+| A clock divider | Slows the 125 MHz system clock to the speed the signal needs |
+| Pin mappings | Which GPIO pins the program reads and writes |
 
 ## PIO Instruction Set
 
 <InArticleAd />
 
 
-PIO assembly has exactly nine instructions. Each instruction is encoded in a single 16-bit word, and every instruction executes in exactly one clock cycle (except when it stalls waiting on a condition).
+Exact timing is possible because the language is so small. PIO assembly has nine instructions, and every one takes exactly one clock cycle (unless it waits for a condition). So you can count the length of a pulse by counting instructions. The program of this lesson uses only `out`, `jmp` and `nop` (do nothing, which the assembler writes as a `mov`). Read the table to know what else exists.
 
 | Instruction | Description |
 |-------------|-------------|
@@ -122,37 +113,35 @@ PIO assembly has exactly nine instructions. Each instruction is encoded in a sin
 
 ### Sideset
 
-Every PIO instruction can optionally toggle "sideset" pins as a side effect. This happens in parallel with the main instruction, at no extra cost. Sideset is critical for clock-based protocols: the main instruction shifts data while the sideset toggles the clock pin.
+If setting a pin needed its own instruction, every change of the pin would cost one cycle, and the timing would depend on the path through the program. Sideset avoids this. Any instruction can also set one or more "sideset" pins, in the same cycle and at no cost: you write `side 1` or `side 0` after the instruction.
 
-For the WS2812B protocol we will use sideset to control the data output pin, letting us set the pin high or low at the exact same cycle that we evaluate a bit value.
+In the WS2812B program the data pin is a sideset pin. The instruction that tests a bit also sets the pin in that same cycle.
 
 ### Autopush and Autopull
 
-Normally the state machine must execute an explicit `push` or `pull` instruction to move data between shift registers and FIFOs. Autopush and autopull automate this: when the shift register has shifted a configurable number of bits (the threshold), the hardware automatically pushes or pulls without consuming an instruction cycle.
+Normally a program needs a `pull` instruction to fetch the next word from the TX FIFO into the OSR (and a `push` for the other direction). That costs one cycle, which would make one bit in every 24 longer than the others. With autopull the hardware fetches the next word by itself, with no cycle used, as soon as a set number of bits (the threshold) has left the OSR.
 
-For WS2812B, we configure autopull with a threshold of 24 bits. After the state machine shifts out 24 bits (one pixel worth of GRB data), the hardware automatically refills the OSR from the TX FIFO. This means the PIO program never needs an explicit `pull` instruction in its main loop.
+For WS2812B the threshold is 24 bits, the data of one LED. The program has no `pull` instruction at all.
 
 ## Clock Divider
 
 <InArticleAd />
 
 
-Each state machine has a 16-bit integer plus 8-bit fractional clock divider. The effective state machine clock is:
+One instruction takes one cycle, so the length of a cycle sets every time in the signal. At the full 125 MHz a cycle is 8 ns, far too short for this strip. Each state machine therefore has a clock divider with a 16-bit whole part (`int`) and an 8-bit fraction (`frac`). The clock of the state machine, `f_sm`, is the system clock `f_sys` divided by it:
 
 ```
 f_sm = f_sys / (int + frac/256)
 ```
 
-With a 125 MHz system clock and a divider of 1.0, the state machine runs at 125 MHz (8 ns per cycle). For the WS2812B protocol, we need specific cycle counts to match the timing specification, so we will calculate the divider to produce the right total period per bit.
-
-The WS2812B protocol requires an 800 kHz bit rate (1.25 us per bit). If our PIO program uses a specific number of cycles per bit, we set the clock divider so that those cycles add up to 1.25 us.
+The WS2812B needs 800,000 bits per second, so one bit lasts 1.25 us. Our program will use 10 cycles for each bit, so one cycle must last 125 ns: a clock of 8 MHz, and a divider of 125 / 8 = 15.625.
 
 ## WS2812B Protocol
 
 <InArticleAd />
 
 
-The WS2812B datasheet specifies an NRZ (non-return-to-zero) encoding where each bit is a fixed-width pulse:
+The strip has one data wire and no clock wire, so the time itself must carry the data. Every bit is one pulse of the same total length, and the width of its high part says whether it is a 0 or a 1:
 
 | Symbol | High Time | Low Time | Total Period |
 |--------|-----------|----------|--------------|
@@ -160,36 +149,34 @@ The WS2812B datasheet specifies an NRZ (non-return-to-zero) encoding where each 
 | Bit 1 | T1H: 800 ns (plus or minus 150 ns) | T1L: 450 ns (plus or minus 150 ns) | 1.25 us |
 | Reset | Low for > 50 us | | |
 
-Both bit 0 and bit 1 start with the line going high. The difference is how long it stays high before going low. For a 0, the high pulse is short (400 ns) and the low pulse is long. For a 1, the high pulse is long (800 ns) and the low pulse is short.
+A 0 is a short high part followed by a long low part:
 
 ```text
- WS2812B Bit Encoding (NRZ, 800 kHz)
-          1.25 us
- Bit 0:  |<-------->|
-         ┌──┐
-         │  │ 400ns
-         │  └────────┐ 850ns
-         │           │
- ────────┘           └────────
-
- Bit 1:  |<-------->|
-         ┌───────┐
-         │       │ 800ns
-         │       └───┐ 450ns
-         │           │
- ────────┘           └────────
-
- Reset:  Low for > 50 us (latch data)
+          400 ns        850 ns
+         ┌──────┐
+         │      │
+ ────────┘      └─────────────────
+         |<------- 1.25 us ------>|
 ```
 
-The pixel data format is 24 bits per LED in GRB order (green first, then red, then blue), MSB first. For a strip of N LEDs, you send N x 24 bits continuously, then hold the line low for at least 50 us to latch the data.
+A 1 is a long high part followed by a short low part:
+
+```text
+              800 ns       450 ns
+         ┌──────────────┐
+         │              │
+ ────────┘              └─────────
+         |<------- 1.25 us ------>|
+```
+
+Each LED takes 24 bits: 8 for green, 8 for red, 8 for blue, in that order (GRB), each with its most significant bit (MSB) first. The first LED keeps the first 24 bits and passes the rest along the strip. For N LEDs you send $N \times 24$ bits with no gap, then hold the line low for more than 50 us. That pause is the reset: on it, all LEDs show the colours they received.
 
 ## PIO Program (ws2812.pio)
 
 <InArticleAd />
 
 
-The classic WS2812 PIO program uses just three instructions in the main loop, plus sideset to control the output pin. Here is the complete `.pio` file:
+This is the WS2812 program that Raspberry Pi publishes with the SDK examples: four instructions, with the data pin driven by sideset. Two things to know before you read it. The number in square brackets is a delay: the instruction takes its one cycle and then waits that many cycles more, so `[T3 - 1]` makes it last T3 cycles. And `side 0` or `side 1` sets the pin at the start of the instruction.
 
 ```pio title="ws2812.pio"
 ;
@@ -215,7 +202,20 @@ do_zero:
 .wrap
 ```
 
-Let us trace through the timing for each bit value. The state machine runs at 800 kHz x 10 cycles per bit = 8 MHz (or equivalently, we set the divider so each cycle is 125 ns).
+One bit takes T1 + T2 + T3 = 2 + 5 + 3 = 10 cycles of 125 ns. Seen from the rising edge, the pin is high for T1 in every bit, high or low for T2 according to the bit, and low for T3 in every bit:
+
+```text
+ cycle    1  2  3  4  5  6  7  8  9  10
+          | T1=2|    T2 = 5    | T3 = 3 |
+          ┌────────────────────┐
+ bit 1    ┘                    └─────────
+          ┌─────┐
+ bit 0    ┘     └────────────────────────
+```
+
+So a 1 is high for 7 cycles (875 ns) and a 0 for 2 cycles (250 ns). These are not the centre values of the table, but they are inside its limits.
+
+The program text starts at the low part, T3, because that is when the next bit is fetched. Follow each path:
 
 **Bit = 1 path (high for a long time):**
 
@@ -233,20 +233,20 @@ Let us trace through the timing for each bit value. The state machine runs at 80
 3. `nop side 0 [T2-1]`: Pin goes low. T2 = 5 cycles (625 ns low).
 </Steps>
 
-Both paths take exactly 10 cycles per bit. With a clock divider that gives 125 ns per cycle, the total period is 1.25 us (800 kHz), matching the WS2812B specification.
+Both paths take exactly 10 cycles, so every bit lasts 1.25 us whatever its value.
 
-The `.wrap_target` and `.wrap` directives create a free jump: when the program counter reaches `.wrap`, it instantly returns to `.wrap_target` without consuming a cycle. This keeps the bit loop running continuously.
+`.wrap_target` and `.wrap` make a free jump: after the last instruction the program counter returns to `.wrap_target` with no cycle used.
 
 ### How Autopull Feeds the Loop
 
-We configure autopull with a threshold of 24 bits. The `out x, 1` instruction shifts one bit at a time from the OSR. After 24 bits have been shifted out, the hardware automatically reloads the OSR from the TX FIFO. If the TX FIFO is empty, the state machine stalls on the `out` instruction, holding the pin low, which conveniently acts as the reset signal when we are done sending pixel data.
+`out x, 1` takes one bit at a time from the OSR. After 24 bits the hardware refills the OSR from the TX FIFO. If the TX FIFO is empty, the state machine waits at the `out` instruction with the pin low. A low line for more than 50 us is the reset signal, so the strip shows its colours as soon as the CPU stops sending. No code is needed for the reset.
 
 ## C Host Code
 
 <InArticleAd />
 
 
-The C code initializes the PIO block, loads the program, configures the state machine, and then writes pixel data to the TX FIFO. The Pico SDK provides helper functions generated from the `.pio` file.
+The C code has two jobs: set the state machine up once, and then write colours to the TX FIFO. The build turns the `.pio` file into a C header with the program and some helper functions.
 
 ### PIO Initialization
 
@@ -280,12 +280,12 @@ static inline void ws2812_program_init(PIO pio, uint sm, uint offset, uint pin, 
 }
 ```
 
-Key points in this initialization:
+What each call does:
 
-- `pio_gpio_init()` hands the GPIO pin over to the PIO block.
-- `sm_config_set_out_shift()` configures shift-left (MSB first), autopull enabled, with a 24-bit threshold.
-- `sm_config_set_fifo_join()` merges the RX FIFO into the TX FIFO, giving us 8 words of transmit buffer instead of 4.
-- The clock divider is calculated from the system clock, the desired WS2812B frequency (800 kHz), and the number of PIO cycles per bit.
+- `pio_gpio_init()` gives the GPIO pin to the PIO block.
+- `sm_config_set_out_shift()` sets the OSR to shift left (MSB first) and switches autopull on with a threshold of 24 bits.
+- `sm_config_set_fifo_join()` adds the unused RX FIFO to the TX FIFO, so the queue holds 8 words and not 4: one full frame for 8 LEDs.
+- The divider is the system clock divided by (800,000 × 10 cycles): 125,000,000 / 8,000,000 = 15.625.
 
 ### Sending Pixel Data
 
@@ -299,18 +299,18 @@ static inline uint32_t urgb_u32(uint8_t r, uint8_t g, uint8_t b) {
 }
 ```
 
-The `put_pixel()` function writes a 32-bit word to the TX FIFO. The pixel data is shifted left by 8 because the OSR shifts MSB first and we use only 24 of the 32 bits. The `urgb_u32()` helper packs RGB values into GRB order as required by WS2812B.
+`put_pixel()` writes one 32-bit word to the TX FIFO. A colour has only 24 bits, and the OSR sends from the top of the word, so the colour is first moved 8 bits to the left. `urgb_u32()` packs red, green and blue in the GRB order that the WS2812B expects.
 
 ## Color Animations
 
 <InArticleAd />
 
 
-With the PIO driver running autonomously, the CPU just needs to fill the pixel buffer and push it to the FIFO periodically. Here are three animation functions.
+The state machine makes the signal, so the CPU only has to choose colours and write them to the FIFO about 50 times a second. Here are three animation functions.
 
 ### HSV to RGB Conversion
 
-Many color animations are easier to express in HSV (hue, saturation, value) space. This helper converts HSV to the GRB format our driver expects:
+A rainbow is hard to write as red, green and blue values, and easy as HSV: hue (the position on the colour circle, here 0 to 255), saturation and value (brightness). This helper converts HSV to the GRB word the driver expects:
 
 ```c
 uint32_t hsv_to_grb(uint8_t h, uint8_t s, uint8_t v) {
@@ -385,7 +385,7 @@ void pattern_breathe(PIO pio, uint sm, uint8_t hue, uint t) {
 <InArticleAd />
 
 
-Here is the full `main.c` that ties together the PIO driver and the animation functions. It cycles through three patterns, switching every few seconds:
+The full `main.c` joins the PIO driver and the animation functions. It changes pattern every 500 frames, about 10 seconds:
 
 ```c title="main.c"
 #include <stdio.h>
@@ -525,7 +525,7 @@ sleep_ms(500);
 <InArticleAd />
 
 
-The build configuration for a PIO project has one extra step compared to a standard Pico SDK project: the `pico_generate_pio_header()` function. This CMake function runs the PIO assembler on your `.pio` file and generates a C header containing the assembled program as a constant array, along with helper functions.
+A C compiler cannot read a `.pio` file. The build for a PIO project therefore has one extra step: `pico_generate_pio_header()` runs the PIO assembler on your `.pio` file and writes a C header that holds the program as an array of numbers.
 
 <FileTree>
 - ws2812-pio/
@@ -565,7 +565,7 @@ pico_enable_stdio_uart(ws2812_pio 0)
 pico_add_extra_outputs(ws2812_pio)
 ```
 
-The `pico_generate_pio_header()` call is the key line. At build time, the SDK's `pioasm` tool parses `ws2812.pio`, assembles the instructions into 16-bit words, and writes `ws2812.pio.h` into the build directory. This header defines `ws2812_program` (the instruction array), `ws2812_program_get_default_config()` (returns a pre-filled `pio_sm_config`), and the timing constants `ws2812_T1`, `ws2812_T2`, and `ws2812_T3` that we declared with `.define public`.
+At build time the SDK tool `pioasm` turns each instruction of `ws2812.pio` into a 16-bit word and writes `ws2812.pio.h` into the build directory. The header defines `ws2812_program` (the instructions), `ws2812_program_get_default_config()` (a configuration to start from), and the constants `ws2812_T1`, `ws2812_T2` and `ws2812_T3` that the `.pio` file declared with `.define public`.
 
 ## Building and Flashing
 
@@ -610,7 +610,7 @@ Connect the WS2812B strip to the Pico as follows:
 
 The 330 ohm series resistor on the data line protects the first LED's input from voltage spikes. For strips longer than 8 LEDs, use an external 5V supply rated for the total current (each WS2812B draws up to 60 mA at full white). Always connect the external supply ground to the Pico ground.
 
-The RP2040 outputs 3.3V logic levels. WS2812B LEDs are specified for 5V logic, but they reliably accept 3.3V signals when powered at 5V. The datasheet minimum input high voltage is 0.7 x VDD = 3.5V, but in practice 3.3V works consistently with nearly all WS2812B strips.
+The RP2040 outputs 3.3V logic levels. WS2812B LEDs are specified for 5V logic, but they reliably accept 3.3V signals when powered at 5V. The datasheet minimum input high voltage is $0.7 \times V_{DD} = 3.5\ \text{V}$, but in practice 3.3V works consistently with nearly all WS2812B strips.
 
 ## Exercises
 
@@ -619,7 +619,7 @@ The RP2040 outputs 3.3V logic levels. WS2812B LEDs are specified for 5V logic, b
 
 <CardGrid>
 <Card title="Exercise 1: Adjust Timing Constants" icon="pencil">
-Modify the T1, T2, and T3 values in the `.pio` file. Change T1 to 3, T2 to 3, and T3 to 4 (still 10 cycles total). Observe how the LED colors change or become unstable. Then calculate and set the clock divider to compensate, restoring correct 800 kHz timing. Document the relationship between cycle counts and the required clock divider value.
+Change T1 to 3, T2 to 3 and T3 to 4 in the `.pio` file (still 10 cycles in total, so the divider does not change). Calculate the high and low times of a 0 and of a 1, compare them with the protocol table, and check that the strip still works. Then choose values with a total of 8 cycles, calculate the new clock divider, and confirm it against the value the C code computes.
 </Card>
 
 <Card title="Exercise 2: Two Independent Strips" icon="pencil">
@@ -640,9 +640,9 @@ Extend Exercise 3 so the user can set individual pixels. Accept commands in the 
 <InArticleAd />
 
 
-PIO is the RP2040's most distinctive peripheral. Two PIO blocks, each with four state machines and a shared 32-instruction memory, let you implement custom protocols with cycle-exact timing and zero CPU involvement during data transfer. The nine-instruction PIO assembly language is minimal but powerful: combined with sideset, autopush/autopull, and configurable clock dividers, a three-instruction loop can generate the precise 800 kHz NRZ signal that WS2812B LEDs require.
+PIO makes signals whose timing must be exact, without using the CPU during the transfer. The RP2040 has two PIO blocks with four state machines each. A state machine runs a short program in which every instruction takes exactly one cycle, so you set the length of a pulse by counting cycles and choosing the clock divider. Sideset changes a pin inside another instruction, and autopull fetches the next word with no instruction. With these, four instructions make the 800 kHz signal of the WS2812B.
 
-The workflow for any PIO project follows the same pattern: write a `.pio` assembly file, let `pico_generate_pio_header()` assemble it into a C header, then use the Pico SDK API to load the program, configure the state machine, and push data through the FIFO. The CPU only touches the FIFO; the state machine handles all pin toggling and timing. In the next lesson, you will use the RP2040's second Cortex-M0+ core to run code in true parallel, communicating between cores through hardware FIFOs and spinlocks.
+Every PIO project follows the same steps: write a `.pio` file, let `pico_generate_pio_header()` turn it into a C header, then load the program, configure the state machine and write data to the FIFO. The CPU touches only the FIFO. The second processor core of the RP2040, which lets two pieces of your own C code run at the same time, is the subject of [multicore programming](/education/embedded-programming-rpi-pico/multicore-programming-dual-core/).
 
 <EmbeddedProgrammingRpiPicoComments />
 

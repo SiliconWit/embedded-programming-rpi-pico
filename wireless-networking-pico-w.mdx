@@ -25,12 +25,12 @@ import { Card, CardGrid, Badge, Steps, LinkButton, FileTree } from '@astrojs/sta
 
 import EmbeddedProgrammingRpiPicoComments from '../../../../components/embedded-programming-rpi-pico/EmbeddedProgrammingRpiPicoComments.astro';
 
-Every project so far has required a USB cable for control and monitoring. That limits where you can deploy the device: it has to be within reach of a laptop. Adding Wi-Fi turns the Pico into a standalone networked node you can control from any phone or browser on the same network. This final lesson brings together everything from the course: PIO drives the WS2812B LED protocol from Lesson 3, the CYW43 wireless chip handles networking, and a lightweight MicroPython web server serves a color picker UI. You will configure Wi-Fi station mode, set up TCP sockets, handle HTTP requests, and push real-time color updates to the NeoPixel strip. #PicoW #WiFi #WirelessEmbedded
+A device that works only while a USB cable ties it to a laptop cannot go where it is needed: on a wall, inside a cabinet, in another room. Wi-Fi removes the cable, and it brings a new kind of fault. A cable works or it does not. A wireless link can be joined and still deliver nothing, and a message can be sent and never arrive. In this lesson a Pico W joins your Wi-Fi network and serves a small web page. On a phone you choose a color or a pattern, and the Pico W shows it on a strip of WS2812B LEDs (NeoPixels). You join the network, open a TCP socket, answer HTTP requests, and learn what "connected" does and does not promise. #PicoW #WiFi #WirelessEmbedded
 
 ## What We Are Building
 
 <Card title="Wi-Fi Controlled NeoPixel Display" icon="star">
-A Pico W running MicroPython connects to your Wi-Fi network and serves a web page with a color picker and pattern selector. When you choose a color or animation pattern on your phone or laptop, the Pico receives the command over HTTP and updates the WS2812B LED strip in real time using PIO. The web UI is self-contained HTML/CSS/JS served directly from the Pico's filesystem.
+A Pico W running MicroPython joins your Wi-Fi network and serves a web page with a color picker, pattern buttons and a brightness slider. When you choose a color or a pattern on your phone or laptop, the browser sends the command over HTTP, the protocol of the web, and the Pico W updates the WS2812B LED strip. A PIO state machine makes the exact LED timing. The web page is one HTML file stored on the Pico W itself.
 </Card>
 
 **Project specifications:**
@@ -40,7 +40,7 @@ A Pico W running MicroPython connects to your Wi-Fi network and serves a web pag
 | Board | Raspberry Pi Pico W (CYW43439) |
 | Wireless | Wi-Fi 802.11n (2.4 GHz), BLE 5.2 |
 | Web Server | Raw socket HTTP server with asyncio |
-| LED Control | WS2812B via PIO (reuse Lesson 3 driver) |
+| LED Control | WS2812B via PIO (the program from the PIO lesson) |
 | Web UI | Color picker, pattern selector, brightness slider |
 | Network Mode | Station mode (connects to existing Wi-Fi) |
 | Runtime | MicroPython with `network` and `socket` modules |
@@ -50,7 +50,7 @@ A Pico W running MicroPython connects to your Wi-Fi network and serves a web pag
 | Ref | Component | Quantity | Notes |
 |-----|-----------|----------|-------|
 | 1 | Raspberry Pi Pico W | 1 | Replaces standard Pico for this lesson |
-| 2 | WS2812B LED strip (8 pixels) | 1 | Reuse from Lesson 3 |
+| 2 | WS2812B LED strip (8 pixels) | 1 | The strip from the PIO lesson |
 | 3 | 330 ohm resistor | 1 | Data line series resistor |
 | 4 | Micro USB cable | 1 | For power and initial flashing |
 | 5 | Breadboard + jumper wires | 1 set | |
@@ -60,32 +60,27 @@ A Pico W running MicroPython connects to your Wi-Fi network and serves a web pag
 <InArticleAd />
 
 
-The Pico W adds an Infineon CYW43439 wireless chip to the standard Pico board. This chip supports 802.11n Wi-Fi on the 2.4 GHz band and Bluetooth 5.2 (including BLE). The CYW43439 connects to the RP2040 over SPI, not through the general-purpose GPIO pins. This means the wireless chip does not consume any of the GPIO pins you use for your own peripherals.
+The RP2040 has no radio. The Pico W adds a second chip for it, the Infineon CYW43439, which handles Wi-Fi on the 2.4 GHz band and Bluetooth. The two chips talk over SPI on pins inside the board, so all 26 pins on the edge of the board stay free for your own parts.
 
 ```text
- Pico W Internal Architecture
- ┌──────────────────────────────────────┐
- │  Raspberry Pi Pico W                │
- │                                      │
- │  ┌────────────┐   SPI   ┌─────────┐│
- │  │  RP2040    │<────────>│ CYW43439││
- │  │            │ (internal│         ││
- │  │ Cortex-M0+ │  pins)  │ Wi-Fi   ││
- │  │ Cortex-M0+ │         │ BLE 5.2 ││
- │  │            │         │         ││
- │  │ GPIO 0..28 │         │ Onboard ││
- │  │ (user pins)│         │ LED     ││
- │  └────────────┘         │ Antenna ││
- │                          └─────────┘│
- │  USB        30 user GPIOs remain    │
- └──┤├─────────────────────────────────┘
+ ┌────────────────── Pico W ───────────────────┐
+ │                                             │
+ │  ┌─────────────┐   SPI    ┌─────────────┐   │
+ │  │  RP2040     │<────────>│  CYW43439   │   │
+ │  │             │ internal │             │   │
+ │  │  26 pins    │  pins    │  Wi-Fi      │   │
+ │  │  for your   │          │  Bluetooth  │   │
+ │  │  own parts  │          │  board LED  │   │
+ │  └─────────────┘          └─────────────┘   │
+ │                                             │
+ └──┤USB├──────────────────────────────────────┘
 ```
 
-One important difference from the standard Pico: the onboard LED is no longer connected to GP25. On the Pico W, the LED is routed through the CYW43 wireless chip. You must use the CYW43 driver to control it. In MicroPython, the pin name `"LED"` maps to the correct CYW43 GPIO internally.
+One thing changes for your code: the LED on the board is no longer on GP25. On the Pico W it hangs on a pin of the wireless chip, so only the wireless driver can switch it. MicroPython hides this behind the pin name `"LED"`.
 
 ### Blinking the Onboard LED
 
-On a standard Pico, you would use `machine.Pin(25, machine.Pin.OUT)` to control the LED. On the Pico W, use this instead:
+On a standard Pico, you would use `machine.Pin(25, machine.Pin.OUT)` to control the LED. On the Pico W, use this:
 
 ```python title="blink_pico_w.py"
 import machine
@@ -98,18 +93,16 @@ while True:
     time.sleep(0.5)
 ```
 
-The string `"LED"` tells MicroPython to route the pin control through the CYW43 driver. If you try `Pin(25)` on a Pico W, nothing happens because GP25 is not connected to the LED on this board.
-
 ## Wi-Fi Connection
 
 <InArticleAd />
 
 
-The `network` module in MicroPython provides the `WLAN` class for managing Wi-Fi connections. The Pico W operates in station mode (STA_IF) to connect to an existing Wi-Fi access point, or in access point mode (AP_IF) to create its own network. For this project we use station mode so the Pico joins your home or lab Wi-Fi.
+A Wi-Fi network is built around an access point, the box (often the home router) that every device talks to. The network has a name, the SSID, and a password. A device that joins an access point is called a station. The Pico W can be a station (`STA_IF`), or it can be an access point itself (`AP_IF`) and make a small network of its own. This project uses station mode, so the Pico W and your phone are on the same home or lab network.
 
 ### Station Mode Setup
 
-The connection sequence follows four steps: activate the interface, issue the connect command, wait for the connection to complete, and retrieve the assigned IP address.
+Joining takes time, sometimes several seconds, and it can fail: a wrong password, a weak signal, an access point that is switched off. So the code does not assume success. It follows four steps: switch the radio on, ask to join, wait while it checks the status, and read the IP address. The IP address is the number by which other devices on the network reach the board.
 
 ```python title="connect_example.py"
 import network
@@ -137,11 +130,13 @@ config = wlan.ifconfig()
 print("Connected. IP address:", config[0])
 ```
 
-The `wlan.status()` method returns an integer code. Status 3 means `CYW43_LINK_JOIN`, indicating a successful connection with an IP address assigned. Negative values indicate errors such as connection failure or wrong password.
+`wlan.status()` returns a number. Status 3 (`CYW43_LINK_UP`) means success. Values 0 to 2 mean the board is still trying. Negative values are errors, such as a wrong password.
+
+Be exact about what status 3 promises. It means two things: the access point accepted the board, and the network gave it an IP address. It does not mean that the router has a working internet line, or that a server far away will answer. It also does not mean that the link is still there a minute later, when someone has moved the board or switched the router off. Before code relies on the link, it should ask again with `wlan.isconnected()` and join again if the answer is no.
 
 ### Reusable Connection Function
 
-Wrapping the connection logic in a function makes it easy to reuse across projects:
+The same steps as a function that other projects can import:
 
 ```python title="wifi_utils.py"
 import network
@@ -152,7 +147,7 @@ def connect_wifi(ssid, password, timeout=10):
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
 
-    # Set power management to aggressive for better responsiveness
+    # Turn off Wi-Fi power saving for better responsiveness
     wlan.config(pm=0xa11140)
 
     wlan.connect(ssid, password)
@@ -169,37 +164,38 @@ def connect_wifi(ssid, password, timeout=10):
     raise RuntimeError("Could not connect to " + ssid)
 ```
 
-The `wlan.config(pm=0xa11140)` call configures power management. The default power saving mode can add latency to incoming connections. Setting this value puts the wireless chip in a more responsive mode, which matters when you are running a web server that needs to reply quickly to HTTP requests.
+The call `wlan.config(pm=0xa11140)` sets the power management of the radio. By default the radio sleeps between messages to save energy, which can delay an incoming connection. This value keeps it awake, so the web server answers quickly. The price is a higher current.
 
 ## Socket Programming Basics
 
 <InArticleAd />
 
 
-With Wi-Fi connected and an IP address assigned, the Pico W can send and receive data over TCP. MicroPython includes `usocket` (aliased as `socket`) for BSD-style socket programming. A web server listens for incoming TCP connections on port 80, reads the HTTP request, and sends back an HTTP response.
+An IP address finds the board. Three more ideas are needed before a browser can talk to it:
+
+- TCP is the protocol that carries bytes between two devices in order and repeats what was lost on the way.
+- A port is a number that says which program on the device the bytes are for. Web servers use port 80.
+- A socket is the object in your program that stands for one end of a connection.
+
+On top of TCP, the browser and the server speak HTTP. The browser sends a request, a few lines of text that begin with a method and a path, such as `GET /` or `POST /color`. The server sends back a response that begins with a status, such as `200 OK`.
 
 ```text
- Pico W Web Server Flow
- ┌──────────┐  1. Connect   ┌──────────┐
- │  Phone   │  to Wi-Fi     │  Pico W  │
- │  Browser ├──────────────>│ TCP :80  │
- │          │               │          │
- │          │  2. HTTP GET  │          │
- │          ├──────────────>│ Parse    │
- │          │  /color?r=255 │ request  │
- │          │               │          │
- │          │  3. Response  │ Update   │
- │          │<──────────────┤ NeoPixels│
- │          │  200 OK +     │ via PIO  │
- │  Shows   │  HTML page    │          │
- │  color   │               │          │
- │  picker  │               │          │
- └──────────┘               └──────────┘
+ ┌──────────┐                   ┌──────────┐
+ │  Phone   │ 1. open a TCP     │  Pico W  │
+ │  browser │    connection     │  port 80 │
+ │          ├──────────────────>│          │
+ │          │ 2. request:       │  read    │
+ │          │    POST /color    │  request │
+ │          ├──────────────────>│          │
+ │          │ 3. response:      │  change  │
+ │          │    200 OK         │  color   │
+ │          │<──────────────────┤          │
+ └──────────┘                   └──────────┘
 ```
 
 ### Minimal Web Server
 
-This example serves a static "Hello from Pico W" page to any browser that connects:
+This example sends a fixed "Hello from Pico W" page to any browser that connects:
 
 ```python title="hello_server.py"
 import socket
@@ -251,11 +247,11 @@ while True:
     client.close()
 ```
 
-The server creates a TCP socket, binds it to all interfaces on port 80, and listens for connections. When a browser connects, the server reads the HTTP request, ignores most of it, and sends back a simple HTML page. The `Connection: close` header tells the browser to close the connection after receiving the response, keeping the server logic simple.
+The server creates a TCP socket, binds it to port 80, and listens. `accept()` waits until a browser connects and returns a new socket for that one browser. The server reads the request, uses only its first line, and sends back the page. The header `Connection: close` tells the browser that the server closes the connection after this one response, which keeps the server simple.
 
 ### Parsing HTTP Requests
 
-For the NeoPixel controller we need to handle different endpoints and parse JSON data from POST requests. Here is the pattern for extracting the method, path, and body:
+The NeoPixel controller must tell requests apart and read the data that comes with a POST request. A request has two parts with an empty line between them: the header lines, and the body, which here holds the data as JSON text. This function takes out the method, the path and the body:
 
 ```python
 def parse_request(data):
@@ -275,7 +271,7 @@ def parse_request(data):
 <InArticleAd />
 
 
-The complete project consists of five files that work together: Wi-Fi configuration, the NeoPixel PIO driver, the HTTP server, the web UI, and the main entry point. Each file has a single responsibility, making the project easy to modify and debug.
+The project has five files, each with one job: the Wi-Fi name and password, the NeoPixel PIO driver, the HTTP server, the web page, and the main program.
 
 ### Project Structure
 
@@ -292,7 +288,7 @@ These files live on the Pico W's internal filesystem. MicroPython executes `main
 
 ### wifi_config.py
 
-Store your network credentials in a separate file so you can keep the rest of the code in version control without exposing your password. Never commit this file to a public repository.
+Keep the network name and password in a file of their own, so that you can share or publish the rest of the code without them. Never put this file in a public repository. The values below are placeholders: write your own on your own board only.
 
 ```python title="wifi_config.py"
 SSID = "YourNetworkName"
@@ -301,7 +297,7 @@ PASSWORD = "YourNetworkPassword"
 
 ### neopixel_pio.py
 
-This module wraps the WS2812B PIO driver in a Python class. The PIO program is the same protocol from Lesson 3, expressed using MicroPython's `@rp2.asm_pio` decorator instead of a `.pio` file.
+A WS2812B LED reads its color from pulses whose width must be right to a fraction of a microsecond. Python cannot time that, and Wi-Fi work would disturb it, so a PIO state machine makes the pulses in hardware. This module wraps the PIO program in a Python class. It is the WS2812B program from [PIO state machines](/education/embedded-programming-rpi-pico/pio-programmable-io-state-machines/), written with MicroPython's `@rp2.asm_pio` decorator in place of a `.pio` file.
 
 ```python title="neopixel_pio.py"
 import rp2
@@ -390,13 +386,15 @@ class NeoPixel:
             return (pos * 3, 0, 255 - pos * 3)
 ```
 
-The PIO program runs at 8 MHz, which gives 10 cycles per bit (T1 + T2 + T3 = 2 + 5 + 3). At 8 MHz each cycle is 125 ns, so the total bit period is 1.25 us, matching the 800 kHz WS2812B specification. This is the same timing analysis from Lesson 3, now running through MicroPython's `rp2.StateMachine` interface.
+The PIO program runs at 8 MHz, so one cycle lasts 125 ns. One bit takes $T1 + T2 + T3 = 2 + 5 + 3 = 10$ cycles, which is $10 \times 125\ \text{ns} = 1.25$ microseconds. That is the 800 kHz bit rate the WS2812B expects.
 
-The `show()` method calls `sm.put(pixel, 8)` for each pixel. The second argument (8) tells the state machine to shift the data left by 8 bits before writing it to the FIFO, matching the 24-bit autopull threshold. After all pixels are written, a 60 us delay generates the reset signal.
+A pixel is stored as one 24-bit number in the order green, red, blue, which is the order the LED expects. The `show()` method calls `sm.put(pixel, 8)` for each pixel. The second argument shifts the 24 bits left by 8, to the top of the 32-bit word, because the state machine sends from the top bit down. After the last pixel, a pause of 60 microseconds with the line low tells the strip that the frame is complete.
 
 ### web_server.py
 
-The HTTP server handles four endpoints: GET `/` serves the web page, POST `/color` sets a solid color, POST `/pattern` selects an animation, and POST `/brightness` adjusts the brightness level.
+The HTTP server answers four requests: GET `/` sends the web page, POST `/color` sets one color, POST `/pattern` selects an animation, and POST `/brightness` sets the brightness.
+
+The server must share the processor with the animation. It does this with `uasyncio`, in which each task is a coroutine: a function that can pause at the word `await` and let another task run. A task is never stopped at any other place.
 
 ```python title="web_server.py"
 import usocket as socket
@@ -445,6 +443,7 @@ class WebServer:
     def _handle_request(self, client):
         """Process one HTTP request."""
         try:
+            # No await in this method: the animation waits until it returns
             data = client.recv(2048)
             if not data:
                 client.close()
@@ -525,19 +524,22 @@ class WebServer:
         while True:
             try:
                 client, addr = self.server.accept()
+                client.settimeout(2)  # Accepted socket inherits non-blocking mode
                 self._handle_request(client)
             except OSError:
                 pass
             await asyncio.sleep_ms(10)
 ```
 
-The server uses a shared `state` dictionary that both the web server and the animation loop can read and write. When a POST request changes the color or pattern, the server updates the state dictionary. The animation coroutine reads from the same dictionary on every frame. This avoids the need for locks or queues; the cooperative scheduling of `uasyncio` ensures only one coroutine runs at a time.
+The server and the animation share one dictionary, `state`. A POST request changes it, and the animation reads it for every frame. No lock is needed, because only one coroutine runs at a time. Note what the reply `"status": "ok"` means: the server has stored the new value. The strip shows it a moment later, on the next frame.
 
-The socket is set to non-blocking mode with `setblocking(False)`. The `accept()` call raises `OSError` when no client is waiting, which the `except` block catches silently. The coroutine then yields control with `await asyncio.sleep_ms(10)`, giving the animation loop a chance to run.
+The listening socket is set to non-blocking with `setblocking(False)`. A normal `accept()` would wait for a browser and stop the animation while it waits. A non-blocking `accept()` raises `OSError` at once when nobody is there. The `except` block ignores that, and `await asyncio.sleep_ms(10)` gives the animation its turn.
+
+An accepted client socket inherits the non-blocking setting, so the server gives it a timeout of 2 seconds before it reads. Without the timeout, `recv()` raises `OSError` whenever the request bytes have not arrived yet.
 
 ### index.html
 
-The web UI is a single self-contained HTML file with inline CSS and JavaScript. It provides a color picker, pattern selection buttons, and a brightness slider. The layout is responsive and works well on phone screens.
+The web page is one HTML file with its CSS and JavaScript inside it. It has a color picker, four pattern buttons and a brightness slider, and it fits a phone screen. Most of the file is styling. The part to read is the script at the end.
 
 ```html title="index.html"
 <!DOCTYPE html>
@@ -788,11 +790,11 @@ The web UI is a single self-contained HTML file with inline CSS and JavaScript. 
 </html>
 ```
 
-The JavaScript uses `fetch()` to send POST requests with JSON bodies to the Pico's endpoints. The color picker fires `sendColor()` on the `change` event (when the user releases the picker), not on every `input` event, to avoid flooding the Pico with requests. The pattern buttons use `click` handlers that also update the active button styling.
+The script uses `fetch()` to send POST requests with a JSON body to the Pico W. The color picker calls `sendColor()` on the `change` event, when you close the picker, and not on every `input` event while you drag. Dragging would send dozens of requests a second, more than the small server can answer.
 
 ### main.py
 
-The entry point connects to Wi-Fi, creates the shared state, and launches two `uasyncio` coroutines: one for the LED animation loop and one for the web server.
+The main program joins the Wi-Fi network, creates the shared state, and starts two coroutines: the LED animation and the web server.
 
 ```python title="main.py"
 import uasyncio as asyncio
@@ -910,14 +912,14 @@ except KeyboardInterrupt:
     print("Stopped by user")
 ```
 
-On boot, the Pico W connects to Wi-Fi and blinks the onboard LED three times to confirm the connection. Then it starts both coroutines with `asyncio.gather()`. The animation loop runs continuously, reading the pattern and color from the shared `state` dictionary. The web server accepts incoming HTTP connections and updates the same dictionary when commands arrive. Because `uasyncio` is cooperative, only one coroutine executes at a time, and context switches happen at every `await` statement.
+On boot, the Pico W joins the network and blinks the board LED three times to confirm it. If it cannot join in 15 seconds, the program stops with an error and no web page is served. `asyncio.gather()` then starts both coroutines. Note that the animation does not need the network: it reads only the `state` dictionary, so the strip continues with its last pattern when the Wi-Fi link is lost.
 
 ## Uploading Files to the Pico W
 
 <InArticleAd />
 
 
-Before running the project you need to transfer all five files to the Pico W's internal filesystem. Two tools work well for this: Thonny (graphical) and mpremote (command line).
+Copy all five files to the Pico W's internal filesystem with Thonny (graphical) or mpremote (command line).
 
 <Tabs>
 <TabItem label="mpremote">
@@ -971,24 +973,22 @@ After the Pico reboots, watch the serial output (Thonny's shell or `mpremote rep
 <InArticleAd />
 
 
-The Pico W runs MicroPython's `uasyncio` library, which provides cooperative multitasking on a single-threaded event loop. Two coroutines share the CPU:
+Two coroutines take turns on one processor:
 
-1. `animation_loop()` updates the LED strip on every frame. Depending on the pattern, it sleeps for 20 to 100 ms between frames using `await asyncio.sleep_ms()`.
+1. `animation_loop()` draws one frame and then sleeps for 20 to 100 ms, depending on the pattern, with `await asyncio.sleep_ms()`.
 
-2. `server.start()` polls for incoming HTTP connections. When no client is waiting, it catches the `OSError` from the non-blocking `accept()` call and yields with `await asyncio.sleep_ms(10)`.
+2. `server.start()` looks for a waiting browser. When there is none, it sleeps with `await asyncio.sleep_ms(10)`.
 
-The key insight is that `await` is the only point where a context switch can happen. Neither coroutine can be interrupted in the middle of updating pixels or handling an HTTP request. This eliminates race conditions on the shared `state` dictionary without requiring locks or mutexes.
+A coroutine gives up the processor only at an `await`. Neither one can be stopped in the middle of a frame or of a change to `state`, so the two never see half-written data.
 
-The timing works out well in practice. The animation loop sleeps for at least 20 ms per frame, giving the server coroutine many opportunities to check for and handle incoming connections. HTTP requests typically complete in under 5 ms (the request and response are small), so the animation does not stutter visibly when a browser sends a command.
-
-If you add more complex server logic or longer running computations, you can insert additional `await asyncio.sleep_ms(0)` calls at strategic points to yield control more frequently without adding real delays.
+The same rule has a cost. `_handle_request()` contains no `await`, so while the server handles one request, the animation stands still. A normal request is short and you do not see it. But a client that connects and then sends nothing holds the server inside `recv()` until the timeout of 2 seconds ends, and the strip freezes for that time. In `uasyncio`, a task that waits without `await` stops every other task.
 
 ## Circuit Wiring
 
 <InArticleAd />
 
 
-Connect the WS2812B strip to the Pico W the same way as in Lesson 3:
+Connect the WS2812B strip as in the PIO lesson:
 
 | WS2812B Pin | Pico W Connection |
 |-------------|-------------------|
@@ -996,16 +996,14 @@ Connect the WS2812B strip to the Pico W the same way as in Lesson 3:
 | VCC (5V) | VBUS (5V USB) or external 5V supply |
 | GND | GND (shared ground with Pico W) |
 
-The Pico W has the same pinout as the standard Pico for all GPIO pins. The only difference is the onboard LED routing and the addition of the CYW43439 module on the back of the board. All your existing wiring from earlier lessons works without changes.
-
 ## Adding MQTT
 
 <InArticleAd />
 
 
-HTTP works well for direct browser control, but many IoT applications need a publish/subscribe messaging system. MQTT is the standard protocol for this. The Pico W can publish its LED state to a broker and subscribe to commands from other devices or dashboards.
+HTTP suits one browser that talks to one device. When many devices and many viewers must share data, each of them connects to one server, called a broker. A device publishes a message under a topic, a name such as `pico/neopixel/state`. The broker passes the message to every client that has subscribed to that topic. This protocol is MQTT.
 
-MicroPython includes the `umqtt.simple` library for basic MQTT communication. If it is not included in your firmware build, install it using `mpremote`:
+MicroPython has the `umqtt.simple` library for MQTT. If your firmware does not include it, install it with `mpremote`:
 
 ```bash
 mpremote mip install umqtt.simple
@@ -1013,7 +1011,7 @@ mpremote mip install umqtt.simple
 
 ### Publish/Subscribe Example
 
-This example connects to an MQTT broker, publishes the current LED color whenever it changes, and subscribes to a topic for receiving color commands from other clients.
+This example connects to a broker, subscribes to a topic for color commands, and has a function that publishes the LED state.
 
 ```python title="mqtt_example.py"
 from umqtt.simple import MQTTClient
@@ -1054,9 +1052,15 @@ def mqtt_publish_state(client, color, pattern):
     client.publish(TOPIC_PUB, payload)
 ```
 
-You can test this with SiliconWit's public MQTT broker at [https://mqtt.siliconwit.io/](https://mqtt.siliconwit.io/). Open a second MQTT client (such as MQTTX or mosquitto_sub on your computer), subscribe to `pico/neopixel/state`, and watch the messages appear when the Pico W publishes its LED state.
+You can test this with SiliconWit's public MQTT broker at [https://mqtt.siliconwit.io/](https://mqtt.siliconwit.io/). Open a second MQTT client on your computer (MQTTX or mosquitto_sub), subscribe to `pico/neopixel/state`, and watch the messages arrive when the Pico W publishes its LED state.
 
-To integrate MQTT into the main project, add a third coroutine that periodically calls `client.check_msg()` to process incoming messages and publishes state updates after each change:
+:::caution[Published does not mean received]
+`client.publish()` returns when the bytes have left the board. At the default level (QoS 0) nobody confirms them. If the broker or the path to it fails, the message is lost and your program is not told. For a message that must arrive, publish with `qos=1`, which waits for the broker's confirmation, or send the present state again at intervals.
+
+Commands that come in have the same weakness: one can arrive late, twice or never. On an open test broker, anybody can also read your topic and send to it. So a remote command may change a color, but it must never be what keeps a device safe. Limits and fast control stay in the firmware. The network is for oversight, alerts and records.
+:::
+
+To add MQTT to the main project, write a third coroutine that calls `client.check_msg()` at intervals. This call looks for a message and returns at once if there is none:
 
 ```python
 async def mqtt_loop(client):
@@ -1096,11 +1100,12 @@ Add a scheduling feature that turns the LED strip on and off at configured times
 <InArticleAd />
 
 
-The Pico W extends the RP2040 with Infineon's CYW43439 wireless chip, connected over SPI and managed through MicroPython's `network` module. Wi-Fi station mode connects the board to an existing network in a few lines of code: activate the WLAN interface, issue the connect call, wait for status 3, and read the IP address. Once connected, standard socket programming serves HTTP requests on port 80.
+The Pico W adds a wireless chip, the CYW43439, to the RP2040. The ideas to keep:
 
-The NeoPixel web controller demonstrates a practical pattern for wireless embedded projects: a shared state dictionary, an animation coroutine that reads the state on every frame, and a server coroutine that updates the state when HTTP commands arrive. MicroPython's `uasyncio` handles cooperative scheduling between the two tasks on the single-core MicroPython runtime. The PIO state machine from Lesson 3 handles all timing-critical LED signaling, freeing the CPU for network and application code.
-
-MQTT extends the same architecture to publish/subscribe messaging, enabling integration with IoT dashboards and other devices on the network. With Wi-Fi, HTTP, MQTT, PIO, and asyncio all working together, the Pico W becomes a capable platform for connected embedded systems.
+- To join a network in station mode: switch the interface on, call `connect()`, wait for status 3, and read the IP address.
+- Status 3 means the access point accepted the board and gave it an address. It promises nothing about the internet, a distant server, or the next minute.
+- A coroutine pauses only at `await`, so code that waits without `await` stops every task.
+- With MQTT, published does not mean received, and a remote command must never be what keeps a device safe.
 
 <EmbeddedProgrammingRpiPicoComments />
 
