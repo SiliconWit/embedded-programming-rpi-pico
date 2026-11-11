@@ -40,7 +40,7 @@ The LED brightness controller, written again in MicroPython and extended with a 
 | Runtime | MicroPython v1.23+ (RP2040 port) |
 | Hardware Access | `machine` module (Pin, PWM, ADC, I2C, SPI) |
 | PIO in Python | `rp2.StateMachine` with `@rp2.asm_pio` decorator |
-| REPL Interface | USB CDC serial at 115200 baud |
+| REPL Interface | USB CDC serial (the baud setting is ignored) |
 | Benchmark | ADC sampling loop, C versus Python timing comparison |
 | Extension Module | Custom C module compiled into MicroPython firmware |
 | Parts | The parts of the GPIO, PWM and analog lesson |
@@ -59,7 +59,7 @@ The LED brightness controller, written again in MicroPython and extended with a 
 <InArticleAd />
 
 
-A C program is translated on your PC into instructions for the processor, and only those go to the board, like a book translated before it is sold. MicroPython works the other way round, like a live interpreter: a program that understands Python, the interpreter, is flashed to the board once, and after that you send it Python text. It is a small Python 3 for microcontrollers; with its compiler and part of the standard library it needs about 256 KB of flash and can run in 16 KB of RAM.
+A C program is translated on your PC into instructions for the processor, and only those go to the board, like a book translated before it is sold. MicroPython works the other way round, like a live interpreter: a program that understands Python, the interpreter, is flashed to the board once, and after that you send it Python text. It is a small Python 3 for microcontrollers; with its compiler and part of the standard library, the Pico build of version 1.23 takes about 320 KB of flash, and MicroPython can run in 16 KB of RAM.
 
 The RP2040 version has two hardware modules: `machine`, with classes for `Pin`, `PWM`, `ADC`, `I2C`, `SPI` and `Timer`, and `rp2`, which gives PIO through the `StateMachine` class and the `@rp2.asm_pio` decorator. Both reach the same hardware registers as the C SDK.
 
@@ -98,7 +98,7 @@ The compiler runs on the microcontroller, not on your PC: this is why MicroPytho
 You install the interpreter once, as a UF2 file (USB Flashing Format), the same kind of file your C builds produce; the MicroPython project offers ready UF2 files for the Raspberry Pi Pico.
 
 <Steps>
-1. Download the latest MicroPython UF2 file from [micropython.org/download/RPI_PICO](https://micropython.org/download/RPI_PICO). Look for the "Releases" section and pick the latest stable `.uf2` file.
+1. Download the latest MicroPython UF2 file from [micropython.org/download/RPI_PICO](https://micropython.org/download/RPI_PICO). Look for the "Releases" section and pick the latest stable `.uf2` file. A Pico W needs the `RPI_PICO_W` file and a Pico 2 the `RPI_PICO2` file: each chip and board has its own build.
 2. Hold the **BOOTSEL** button on the Pico, then connect the USB cable to your computer. The Pico appears as a USB mass storage device named `RPI-RP2`.
 3. Drag and drop the `.uf2` file onto the `RPI-RP2` drive. The Pico will reboot automatically.
 4. The Pico now runs MicroPython and appears as a serial port over USB, no longer as a drive.
@@ -355,6 +355,14 @@ The C version has about 90 lines and the MicroPython version about 70. The large
  └──────────────────┘  └──────────────────┘
 ```
 
+### Check it
+
+A rewrite is only finished when it gives the same results as the program it replaces:
+
+1. Leave the knob in one place and run each version. The MicroPython ADC number divided by 16 should be within a few counts of the C number, and the duty cycle the same.
+2. The temperature should agree with the C version within about a degree, and the average should move less than the single reading.
+3. Time the loop: keep the longest gap between two passes (`time.ticks_diff()`) over a few minutes. Most passes take a little over 50 ms; a pass several milliseconds longer is a garbage collection, the unevenness this lesson warns about.
+
 ## PIO in MicroPython
 
 <InArticleAd />
@@ -502,7 +510,7 @@ int main(void) {
 |--------|-------|-------------|-------|
 | Lines of code (full project) | ~90 | ~70 | 1.3x fewer in Python |
 | Build time | ~30 seconds (cmake + make) | 0 (no build step) | Instant |
-| Flash usage | ~40 KB (.uf2) | ~650 KB (firmware) + ~2 KB (script) | 16x more |
+| Flash usage | ~33 KB (the dimmer, SDK 2.1) | ~322 KB (firmware 1.23) + ~2 KB (script) | about 10x more |
 | RAM usage | ~8 KB | ~60 KB (interpreter + heap) | 7.5x more |
 | ADC loop speed | ~480,000 samples/sec | ~18,000 samples/sec | ~27x faster in C |
 | Development time (this project) | ~30 minutes | ~10 minutes | 3x faster in Python |
@@ -561,7 +569,18 @@ MP_REGISTER_MODULE(MP_QSTR_fastadc, fastadc_module);
 
 ### Building Custom Firmware
 
-To compile this into MicroPython, you clone the MicroPython repository, place your module source in the `ports/rp2/` directory (or use the `USER_C_MODULES` mechanism), and rebuild:
+Two things to know before you use it: `adc_read()` reads whichever ADC input was selected last, so call `adc.read_u16()` once first to select GP26; and it returns 12-bit values (0 to 4095), not the 0 to 65535 of `read_u16()`.
+
+To compile it into MicroPython, put `modfastadc.c` in a folder of its own (for example `~/mpmods/fastadc/`) with this `micropython.cmake`, which tells the build about the file:
+
+```cmake title="micropython.cmake"
+add_library(usermod_fastadc INTERFACE)
+target_sources(usermod_fastadc INTERFACE ${CMAKE_CURRENT_LIST_DIR}/modfastadc.c)
+target_include_directories(usermod_fastadc INTERFACE ${CMAKE_CURRENT_LIST_DIR})
+target_link_libraries(usermod INTERFACE usermod_fastadc)
+```
+
+Then clone the MicroPython repository and rebuild the firmware with the full path to that file:
 
 ```bash
 git clone https://github.com/micropython/micropython.git
@@ -569,7 +588,7 @@ cd micropython
 make -C mpy-cross                      # Build the cross-compiler first
 cd ports/rp2
 make submodules                         # Fetch required submodules
-make USER_C_MODULES=path/to/your/modules/micropython.cmake
+make USER_C_MODULES=$HOME/mpmods/fastadc/micropython.cmake
 ```
 
 The build produces a new `.uf2` file that includes your C module. Flash it to the Pico using the same BOOTSEL procedure, and your module becomes importable:
@@ -578,6 +597,7 @@ The build produces a new `.uf2` file that includes your C module. Flash it to th
 >>> import fastadc
 >>> from machine import ADC
 >>> adc = ADC(26)
+>>> adc.read_u16()                # selects GP26 for adc_read()
 >>> avg = fastadc.average(1000)   # 1000 samples averaged in C, returned to Python
 >>> print(avg)
 ```

@@ -27,7 +27,7 @@ Keep the [RP2040 Datasheet](https://datasheets.raspberrypi.com/rp2040/rp2040-dat
   </Card>
 
   <Card title="DMA That Chains" icon="setting">
-    DMA channels with chaining, pacing timers, and ring buffer modes. Build pipelines where ADC feeds DMA feeds PIO with zero CPU involvement. Lesson 5 shows how.
+    DMA channels that start each other with no CPU in between. Lesson 5 builds an ADC-to-memory pipeline that misses no sample while the CPU writes to flash.
   </Card>
 
   <Card title="C SDK and MicroPython" icon="rocket">
@@ -65,7 +65,7 @@ Each lesson follows a consistent cycle:
   </Card>
 
   <Card title="Lesson 2: GPIO, PWM, and Analog I/O" icon="document">
-    [GPIO, PWM, and Analog I/O](/education/embedded-programming-rpi-pico/gpio-pwm-analog-io/). Explore GPIO functions, PWM slice architecture, the 12-bit ADC, on-chip temperature sensor, and hardware interpolators. Build an LED brightness controller with analog knob and serial feedback.
+    [GPIO, PWM, and Analog I/O](/education/embedded-programming-rpi-pico/gpio-pwm-analog-io/). Explore GPIO functions, PWM slice architecture, the 12-bit ADC and the on-chip temperature sensor. Build an LED brightness controller with analog knob and serial feedback.
     **Build:** LED brightness controller. **Parts:** LEDs, potentiometer, resistors.
   </Card>
 
@@ -80,12 +80,12 @@ Each lesson follows a consistent cycle:
   </Card>
 
   <Card title="Lesson 5: DMA and High-Speed Data Pipelines" icon="document">
-    [DMA and High-Speed Data Pipelines](/education/embedded-programming-rpi-pico/dma-high-speed-data-pipelines/). Configure DMA channels with chaining, pacing timers, and ring buffer modes. Build an audio sampler that captures microphone input via ADC+DMA and stores it to SPI flash.
+    [DMA and High-Speed Data Pipelines](/education/embedded-programming-rpi-pico/dma-high-speed-data-pipelines/). Configure DMA channels with chaining and DREQ pacing. Build an audio sampler that captures microphone input via ADC+DMA and stores it to SPI flash.
     **Build:** Audio sampler. **Parts:** Electret microphone module, W25Q SPI flash module.
   </Card>
 
   <Card title="Lesson 6: USB Device Classes" icon="document">
-    [USB Device Classes](/education/embedded-programming-rpi-pico/usb-device-classes/). Use TinyUSB to implement HID, CDC, and MSC USB device classes. Build a custom USB gamepad with a joystick and buttons that appears as a standard HID controller on any PC.
+    [USB Device Classes](/education/embedded-programming-rpi-pico/usb-device-classes/). Use TinyUSB to implement the HID and CDC USB device classes in one composite device. Build a custom USB gamepad with a joystick and buttons that appears as a standard HID controller on any PC.
     **Build:** Custom USB gamepad. **Parts:** Thumb joystick module, 4 push buttons.
   </Card>
 
@@ -95,7 +95,7 @@ Each lesson follows a consistent cycle:
   </Card>
 
   <Card title="Lesson 8: Wireless with Pico W" icon="document">
-    [Wireless Networking with Pico W](/education/embedded-programming-rpi-pico/wireless-networking-pico-w/). Use the CYW43 wireless driver for Wi-Fi and BLE connectivity. Set up network sockets, run a microdot web server, and serve a control interface. Build a Wi-Fi controlled NeoPixel display.
+    [Wireless Networking with Pico W](/education/embedded-programming-rpi-pico/wireless-networking-pico-w/). Join Wi-Fi through the CYW43 wireless chip, answer HTTP requests from raw sockets with asyncio, and serve a control page. Build a Wi-Fi controlled NeoPixel display.
     **Build:** Wi-Fi controlled NeoPixel display. **Parts:** Pico W (swap from Pico), reuse WS2812B.
   </Card>
 </CardGrid>
@@ -124,7 +124,7 @@ Each lesson follows a consistent cycle:
 | Skill | Lessons 1-2 | Lessons 3-4 | Lessons 5-6 | Lessons 7-8 |
 |-------|------------|------------|------------|------------|
 | **Architecture** | Boot, GPIO, PWM, ADC | PIO assembly, multicore | DMA channels, USB PHY | MicroPython VM, CYW43 |
-| **Unique Features** | UF2 flashing, interpolators | PIO state machines, FIFOs | DMA chaining, ring buffers | PIO in Python, Wi-Fi |
+| **Unique Features** | UF2 flashing, PWM slices | PIO state machines, FIFOs | DMA chaining, composite USB | PIO in Python, Wi-Fi |
 | **Projects** | Text injector, LED control | LED strip driver, synth | Audio sampler, USB gamepad | Sensor dashboard, Wi-Fi display |
 | **Language** | C (Pico SDK) | C (Pico SDK) | C (TinyUSB) | MicroPython, then C |
 

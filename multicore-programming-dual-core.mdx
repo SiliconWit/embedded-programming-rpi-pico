@@ -176,7 +176,7 @@ A statement such as `shared_counter++` looks like one action, but the processor 
 
 A lock prevents this: a core takes the lock, does its three steps and releases it, while the other core waits. The code between taking and releasing is the critical section.
 
-The lock itself must not have the same weakness, so the RP2040 builds it in hardware: 32 spinlocks (SIO_SPINLOCK0 through SIO_SPINLOCK31). Reading a spinlock register tests and takes the lock in one step that nothing can split (an atomic step). A nonzero result means the lock was free and the caller now owns it; zero means it was already held.
+The lock itself must not have the same weakness, so the RP2040 builds it in hardware: 32 spinlocks (SIO_SPINLOCK0 through SIO_SPINLOCK31). (On the Pico 2 the SDK uses software spinlocks by default, because of the RP2350 erratum E2; the calls below are the same.) Reading a spinlock register tests and takes the lock in one step that nothing can split (an atomic step). A nonzero result means the lock was free and the caller now owns it; zero means it was already held.
 
 The Pico SDK wraps this in a few calls:
 
@@ -255,7 +255,7 @@ In the synthesizer, the mutex protects the shared settings struct. Core 1 writes
 <InArticleAd />
 
 
-The work is divided by how urgent it is. Core 0 writes a new sample to the PWM about every 62 microseconds. Core 1 scans the buttons every 20 ms, which also hides contact bounce.
+The work is divided by how urgent it is. Core 0 writes a new sample to the PWM every 62.5 microseconds. Core 1 scans the buttons every 20 ms, which also hides contact bounce.
 
 ### Note Definitions
 
@@ -383,7 +383,7 @@ Each button connects a pin to GND. The internal pull-up resistors hold the pins 
 
 ### Speaker Wiring
 
-If you use a small 8 ohm speaker in place of the piezo, put a 100 ohm resistor in series to limit the current. An RP2040 pin can supply about 12 mA. That is enough for a small piezo buzzer and too little to drive a speaker loudly.
+An RP2040 pin is set to 4 mA drive at reset, and can be set up to 12 mA with `gpio_set_drive_strength()`. That is enough for a small piezo buzzer. An 8 ohm speaker needs more: with 100 ohm in series it would ask for 3.3 V / 108 ohm, about 31 mA, more than the pin is made for. Drive a speaker through a small NPN transistor or logic-level MOSFET, or limit it to about 12 mA with at least 270 ohm and accept a quiet sound.
 
 ### Waveform Toggle
 
@@ -479,8 +479,11 @@ uint8_t compute_sample(waveform_t wave) {
 }
 
 void core0_audio_loop(void) {
-    /* Period between samples in microseconds */
-    const uint32_t sample_period_us = 1000000 / SAMPLE_RATE;
+    /* Sample n is due at n x 62.5 us after the start. Counting from the
+       start keeps 16,000 samples a second, however long the loop's own
+       work takes, so the notes are not flat. */
+    const absolute_time_t start = get_absolute_time();
+    uint64_t sample_count = 0;
 
     uint32_t local_freq = NOTE_C4;
     waveform_t local_wave = WAVE_SQUARE;
@@ -518,7 +521,8 @@ void core0_audio_loop(void) {
             pwm_set_gpio_level(AUDIO_PIN, 0);
         }
 
-        busy_wait_us(sample_period_us);
+        sample_count++;
+        busy_wait_until(delayed_by_us(start, sample_count * 1000000ull / SAMPLE_RATE));
     }
 }
 
@@ -709,8 +713,16 @@ pico_add_extra_outputs(multicore_synth)
    ```
    On macOS the mount point is `/Volumes/RPI-RP2/`. On Windows, drag the file to the RPI-RP2 drive in File Explorer.
 
-6. The Pico reboots automatically. Press the buttons to play notes. Long-press Button 4 to toggle between square and sawtooth waveforms. Open a serial monitor (115200 baud) to see waveform change messages.
+6. The Pico reboots automatically. Press the buttons to play notes. Long-press Button 4 to toggle between square and sawtooth waveforms. Open a serial monitor (any baud setting) to see waveform change messages.
 </Steps>
+
+### Check it
+
+A tuner app on a phone, held near the buzzer, tests both cores at once:
+
+- Each button should read within about 1 cent of its note: the phase step drops a fraction, so C4 plays 261.96 Hz, E4 329.83, G4 391.85, C5 522.95. Many cents flat means the samples are late (see the timing comment in `core0_audio_loop()`).
+- Hold a note and press the other buttons quickly many times: the pitch must not move and the tone must not click. A click means the audio core waited for something.
+- A long press of Button 4 prints one "Waveform" line; the sawtooth sounds brighter than the square at the same pitch.
 
 ## Exercises
 

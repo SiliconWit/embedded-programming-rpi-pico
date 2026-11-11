@@ -449,6 +449,20 @@ class WebServer:
                 client.close()
                 return
 
+            # A browser may send the body in a second TCP packet: read
+            # until Content-Length bytes are here (or the 2 s timeout)
+            head, _, rest = data.partition(b"\r\n\r\n")
+            need = 0
+            for line in head.split(b"\r\n"):
+                if line.lower().startswith(b"content-length:"):
+                    need = min(int(line[15:]), 1024)
+            while len(rest) < need:
+                more = client.recv(need - len(rest))
+                if not more:
+                    break
+                rest += more
+            data = head + b"\r\n\r\n" + rest
+
             method, path, body = self._parse_request(data)
             print("{} {}".format(method, path))
 
@@ -458,12 +472,10 @@ class WebServer:
 
             elif method == "POST" and path == "/color":
                 params = json.loads(body)
+                # Never trust a value from the network: whole numbers 0 to 255
+                rgb = [max(0, min(255, int(params.get(k, 0)))) for k in "rgb"]
                 self.state["pattern"] = "solid"
-                self.state["color"] = (
-                    params.get("r", 0),
-                    params.get("g", 0),
-                    params.get("b", 0)
-                )
+                self.state["color"] = tuple(rgb)
                 self._send_json(client, {"status": "ok", "color": self.state["color"]})
 
             elif method == "POST" and path == "/pattern":
@@ -481,7 +493,7 @@ class WebServer:
 
             elif method == "POST" and path == "/brightness":
                 params = json.loads(body)
-                value = max(0, min(100, params.get("value", 30)))
+                value = max(0, min(100, int(params.get("value", 30))))
                 self.state["brightness"] = value / 100.0
                 self._send_json(client, {"status": "ok", "brightness": value})
 
@@ -800,6 +812,7 @@ The main program joins the Wi-Fi network, creates the shared state, and starts t
 import uasyncio as asyncio
 import network
 import time
+import machine
 from machine import Pin
 from wifi_config import SSID, PASSWORD
 from neopixel_pio import NeoPixel
@@ -910,9 +923,15 @@ try:
     asyncio.run(main())
 except KeyboardInterrupt:
     print("Stopped by user")
+except Exception as e:
+    # After a power cut the router may need a minute or more to start.
+    # Never stop for good: wait, restart the board and try again.
+    print("Error:", e, "- restarting in 30 s")
+    time.sleep(30)
+    machine.reset()
 ```
 
-On boot, the Pico W joins the network and blinks the board LED three times to confirm it. If it cannot join in 15 seconds, the program stops with an error and no web page is served. `asyncio.gather()` then starts both coroutines. Note that the animation does not need the network: it reads only the `state` dictionary, so the strip continues with its last pattern when the Wi-Fi link is lost.
+On boot, the Pico W joins the network and blinks the board LED three times to confirm it. If it cannot join in 15 seconds, it waits 30 seconds and restarts to try again. A program that stopped here would be dead after every power cut, because the Pico W starts in about a second and many routers need a minute or more. `asyncio.gather()` then starts both coroutines. Note that the animation does not need the network: it reads only the `state` dictionary, so the strip continues with its last pattern when the Wi-Fi link is lost.
 
 ## Uploading Files to the Pico W
 
@@ -968,6 +987,15 @@ mpremote cp wifi_config.py neopixel_pio.py web_server.py index.html main.py :
 
 After the Pico reboots, watch the serial output (Thonny's shell or `mpremote repl`) for the Wi-Fi connection status and the IP address. Open that IP address in a browser on your phone or laptop, and the NeoPixel controller interface appears.
 
+### Check it
+
+Test the server as a client would, from a terminal on a laptop on the same network (put the board's address in place of `192.168.1.50`):
+
+1. `curl -X POST -d '{"r":255,"g":0,"b":64}' http://192.168.1.50/color` answers with status ok and the colour, and the strip turns pink. At the default brightness of 30 percent each LED receives 76, 0 and 19.
+2. Send `{"r":999}`: the answer shows 255. A value the server does not check could reach the strip as a wrong colour.
+3. `nc 192.168.1.50 80`, then type nothing: the animation stops for 2 s and continues. This is the limit described in the next section.
+4. Switch the router and the Pico W off together, then on: the serial output shows "restarting in 30 s" until the router is ready, and the page answers again shortly after.
+
 ## How the Animation Loop Works
 
 <InArticleAd />
@@ -1017,10 +1045,14 @@ This example connects to a broker, subscribes to a topic for color commands, and
 from umqtt.simple import MQTTClient
 import ujson as json
 import time
+import machine
+import ubinascii
 
-BROKER = "mqtt.siliconwit.io"
+BROKER = "test.mosquitto.org"   # A public test broker: no login, no privacy
 PORT = 1883
-CLIENT_ID = "pico-w-neopixel"
+# A broker drops a client when another one connects with the same ID,
+# so make the ID unique to this board
+CLIENT_ID = b"pico-w-" + ubinascii.hexlify(machine.unique_id())
 TOPIC_PUB = b"pico/neopixel/state"
 TOPIC_SUB = b"pico/neopixel/command"
 
@@ -1052,7 +1084,7 @@ def mqtt_publish_state(client, color, pattern):
     client.publish(TOPIC_PUB, payload)
 ```
 
-You can test this with SiliconWit's public MQTT broker at [https://mqtt.siliconwit.io/](https://mqtt.siliconwit.io/). Open a second MQTT client on your computer (MQTTX or mosquitto_sub), subscribe to `pico/neopixel/state`, and watch the messages arrive when the Pico W publishes its LED state.
+You can test this with the public test broker `test.mosquitto.org` on port 1883, which needs no login: anybody can read and write every topic on it, so send nothing private. Open a second MQTT client on your computer (MQTTX or mosquitto_sub), subscribe to `pico/neopixel/state`, and watch the messages arrive when the Pico W publishes its LED state. Other people use the same broker, so put something of your own in the topic names. [SiliconWit.io](https://mqtt.siliconwit.io/) also accepts MQTT from devices, but over TLS with a token for each device and with its own topic names (telemetry on `d/<device id>/t`), so the connection settings and topics of this example would have to change to use it.
 
 :::caution[Published does not mean received]
 `client.publish()` returns when the bytes have left the board. At the default level (QoS 0) nobody confirms them. If the broker or the path to it fails, the message is lost and your program is not told. For a message that must arrive, publish with `qos=1`, which waits for the broker's confirmation, or send the present state again at intervals.

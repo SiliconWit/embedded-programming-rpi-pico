@@ -62,7 +62,7 @@ A PIO program that drives a strip of 8 WS2812B LEDs. Your C code decides the col
 
 Many devices expect a signal whose timing is exact: WS2812B LEDs, audio converters, displays, serial links at unusual speeds. Without special hardware you switch the pin from code and count the time in a loop (bit-banging). That has two costs: the CPU can do nothing else during the transfer, and any interrupt stretches a pulse.
 
-PIO removes both. The RP2040 has two PIO blocks (PIO0 and PIO1), each with four state machines. A state machine is a very small processor that can do little more than move pins and shift bits, like a worker with a short instruction card: it runs a program of at most 32 instructions, one per clock cycle, and nothing interrupts it. You write the program, start the state machine, and the CPU is free.
+PIO removes both. The RP2040 has two PIO blocks (PIO0 and PIO1), each with four state machines (the Pico 2's RP2350 has three blocks). A state machine is a very small processor that can do little more than move pins and shift bits, like a worker with a short instruction card: it runs a program of at most 32 instructions, one per clock cycle, and nothing interrupts it. You write the program, start the state machine, and the CPU is free.
 
 The CPU and the state machine work at different speeds, so they exchange 32-bit words through a FIFO (first in, first out), a queue like people waiting at a counter. The CPU puts words in when it has time; the state machine takes them when it needs them. A full queue makes the CPU wait, an empty one the state machine.
 
@@ -147,7 +147,7 @@ The strip has one data wire and no clock wire, so the time itself must carry the
 |--------|-----------|----------|--------------|
 | Bit 0 | T0H: 400 ns (plus or minus 150 ns) | T0L: 850 ns (plus or minus 150 ns) | 1.25 us |
 | Bit 1 | T1H: 800 ns (plus or minus 150 ns) | T1L: 450 ns (plus or minus 150 ns) | 1.25 us |
-| Reset | Low for > 50 us | | |
+| Reset | Low for > 50 us (> 280 us for newer WS2812B) | | |
 
 A 0 is a short high part followed by a long low part:
 
@@ -176,7 +176,7 @@ Each LED takes 24 bits: 8 for green, 8 for red, 8 for blue, in that order (GRB),
 <InArticleAd />
 
 
-This is the WS2812 program Raspberry Pi publishes with the SDK examples: four instructions, the data pin driven by sideset. Two notes before you read it. The number in square brackets is a delay: the instruction takes its one cycle and then waits that many more, so `[T3 - 1]` makes it last T3 cycles. And `side 0` or `side 1` sets the pin at the start of the instruction.
+This is the WS2812 program as Raspberry Pi first published it in its SDK examples: four instructions, the data pin driven by sideset. Its current example has the same four lines with T1 = 3, T2 = 3, T3 = 4 (exercise 1 shows why). Two notes before you read it. The number in square brackets is a delay: the instruction takes its one cycle and then waits that many more, so `[T3 - 1]` makes it last T3 cycles. And `side 0` or `side 1` sets the pin at the start of the instruction.
 
 ```pio title="ws2812.pio"
 ;
@@ -213,7 +213,7 @@ One bit takes T1 + T2 + T3 = 2 + 5 + 3 = 10 cycles of 125 ns. Seen from the risi
  bit 0    ┘     └────────────────────────
 ```
 
-So a 1 is high for 7 cycles (875 ns) and a 0 for 2 cycles (250 ns). These are not the centre values of the table, but they are inside its limits. The 0 sits exactly at the edge of two of them: high 250 ns (the limit is 250 to 550 ns) and low 8 cycles, 1000 ns (the limit is 700 to 1000 ns).
+So a 1 is high for 7 cycles (875 ns) and a 0 for 2 cycles (250 ns). These are not the centre values of the table, but they are inside its limits. The 0 sits exactly at the edge of two of them: high 250 ns (the limit is 250 to 550 ns) and low 8 cycles, 1000 ns (the limit is 700 to 1000 ns). It works on the bench, but a strip from another maker, or a long wire that rounds the edges, can read such a 0 as a 1. For a strip that must work for years, use 3, 3 and 4, which put every time near the middle of its range.
 
 The program text starts at the low part, T3, because that is when the next bit is fetched. Follow each path:
 
@@ -239,7 +239,7 @@ Both paths take exactly 10 cycles, so every bit lasts 1.25 us whatever its value
 
 ### How Autopull Feeds the Loop
 
-`out x, 1` takes one bit at a time from the OSR. After 24 bits the hardware refills the OSR from the TX FIFO. If the TX FIFO is empty, the state machine waits at the `out` instruction with the pin low. A low line for more than 50 us is the reset signal, so the strip shows its colours as soon as the CPU stops sending. No code is needed for the reset.
+`out x, 1` takes one bit at a time from the OSR. After 24 bits the hardware refills the OSR from the TX FIFO. If the TX FIFO is empty, the state machine waits at the `out` instruction with the pin low. A low line for more than 50 us (280 us for newer WS2812B; the 20 ms pause between frames covers both) is the reset signal, so the strip shows its colours as soon as the CPU stops sending. No code is needed for the reset.
 
 ## C Host Code
 
@@ -285,7 +285,7 @@ What each call does:
 - `pio_gpio_init()` gives the GPIO pin to the PIO block.
 - `sm_config_set_out_shift()` sets the OSR to shift left (MSB first) and switches autopull on with a threshold of 24 bits.
 - `sm_config_set_fifo_join()` adds the unused RX FIFO to the TX FIFO, so the queue holds 8 words and not 4: one full frame for 8 LEDs.
-- The divider is the system clock divided by (800,000 × 10 cycles): 125,000,000 / 8,000,000 = 15.625.
+- The divider is the system clock divided by (800,000 × 10 cycles): 125,000,000 / 8,000,000 = 15.625. The code reads the real clock with `clock_get_hz()`, so on a Pico 2 at 150 MHz it sets 18.75 by itself.
 
 ### Sending Pixel Data
 
@@ -610,7 +610,14 @@ Connect the WS2812B strip to the Pico as follows:
 
 The 330 ohm series resistor protects the first LED's data input from voltage spikes. For more than 8 LEDs, use an external 5V supply rated for the total current (each WS2812B draws up to 60 mA at full white). Always connect the external supply ground to the Pico ground.
 
-The RP2040 outputs 3.3V logic, and WS2812B LEDs are specified for 5V logic: the datasheet minimum input high voltage is $0.7 \times V_{DD} = 3.5\ \text{V}$. In practice, powered at 5V, nearly all WS2812B strips accept 3.3V reliably.
+The RP2040 outputs 3.3V logic, and WS2812B LEDs are specified for 5V logic: the datasheet minimum input high voltage is $0.7 \times V_{DD} = 3.5\ \text{V}$. On the bench, powered at 5V, nearly all WS2812B strips accept 3.3V. For an installation, add a 5V level shifter such as a 74AHCT125 on the data line, and a capacitor of several hundred microfarads across the strip's 5V and GND where the power enters.
+
+### Check it
+
+- The first pixel is red when the rainbow starts (hue 0) and the next ones turn orange, then yellow. If the first pixel is green, the strip expects RGB order, not GRB.
+- One frame of 8 LEDs is 8 x 24 x 1.25 us = 240 us. With a logic analyser on GP2, a 0 is high for 250 ns and a 1 for 875 ns, and each bit lasts 1.25 us.
+- Each pattern lasts about 10 s (500 frames of a little over 20 ms), and a breath about 5 s.
+- Flicker or a wrong colour at the far end of the strip, but not at the start, usually means a weak 5V supply or a data level problem, not the PIO program.
 
 ## Exercises
 

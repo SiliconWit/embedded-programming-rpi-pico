@@ -226,7 +226,9 @@ TinyUSB supports many classes, and each one costs memory. This header says which
 #define CFG_TUSB_MCU           OPT_MCU_RP2040
 #define CFG_TUSB_OS            OPT_OS_PICO
 
-/* USB device configuration */
+/* USB device configuration: port 0 is a device. Without this
+   line, tusb_init() does not build with SDK 2.x. */
+#define CFG_TUSB_RHPORT0_MODE  OPT_MODE_DEVICE
 #define CFG_TUD_ENABLED        1
 
 /* Enable HID and CDC classes */
@@ -490,6 +492,10 @@ Each button connects between the GPIO pin and GND. The firmware enables the inte
 #define ADC_CENTER      2048   /* 12-bit ADC midpoint */
 #define DEAD_ZONE       100    /* Ignore values within this range of center */
 
+/* Rest position of each axis, measured at power-up in main() */
+static int32_t center_x = ADC_CENTER;
+static int32_t center_y = ADC_CENTER;
+
 /* ---------- Report structure (must match HID report descriptor) ---------- */
 
 typedef struct __attribute__((packed)) {
@@ -517,9 +523,9 @@ static uint16_t adc_read_channel(uint8_t channel)
 }
 
 /* Convert 12-bit ADC (0-4095) to signed 8-bit (-127 to 127) with dead zone */
-static int8_t adc_to_axis(uint16_t raw)
+static int8_t adc_to_axis(uint16_t raw, int32_t center)
 {
-    int32_t centered = (int32_t)raw - ADC_CENTER;
+    int32_t centered = (int32_t)raw - center;
 
     /* Apply dead zone: if the joystick is near center, report zero */
     if (abs((int)centered) < DEAD_ZONE) {
@@ -570,8 +576,8 @@ static void send_gamepad_report(void)
     gamepad_report_t report;
 
     report.buttons = buttons_read();
-    report.x = adc_to_axis(adc_read_channel(JOY_X_CHANNEL));
-    report.y = adc_to_axis(adc_read_channel(JOY_Y_CHANNEL));
+    report.x = adc_to_axis(adc_read_channel(JOY_X_CHANNEL), center_x);
+    report.y = adc_to_axis(adc_read_channel(JOY_Y_CHANNEL), center_y);
 
     /* Only send if something changed, or periodically to keep alive */
     if (memcmp(&report, &last_report, sizeof(report)) != 0 || report_pending) {
@@ -653,6 +659,11 @@ int main(void)
     /* Initialize ADC for joystick */
     adc_setup();
 
+    /* Nobody touches the stick while it is plugged in: take that
+       position as the centre of each axis */
+    center_x = adc_read_channel(JOY_X_CHANNEL);
+    center_y = adc_read_channel(JOY_Y_CHANNEL);
+
     /* Initialize button GPIOs */
     buttons_setup();
 
@@ -682,9 +693,9 @@ int main(void)
 
 ### How the Firmware Works
 
-Reading the stick. `adc_read_channel()` selects an input and makes one 12-bit conversion, 0 to 4095. The report needs a signed number from -127 to 127 with 0 at rest, so `adc_to_axis()` subtracts the midpoint 2048, applies a dead zone, and scales: a reading of 3072 gives $3072 - 2048 = 1024$, and $1024 \times 127 / 2048 = 63$, half of full travel.
+Reading the stick. `adc_read_channel()` selects an input and makes one 12-bit conversion, 0 to 4095. The report needs a signed number from -127 to 127 with 0 at rest, so `adc_to_axis()` subtracts the centre, applies a dead zone, and scales: with the centre at 2048, a reading of 3072 gives $3072 - 2048 = 1024$, and $1024 \times 127 / 2048 = 63$, half of full travel.
 
-The dead zone. A joystick does not rest exactly at the electrical midpoint, and its reading moves a little by itself, so without a dead zone the gamepad would report small movements when nobody touches it. Every reading closer than 100 counts to the midpoint becomes 0: $100 / 2048$, about the inner 5% of the travel.
+The centre and the dead zone. A cheap thumb joystick often rests 100 to 200 counts away from the electrical midpoint 2048, and its reading moves a little by itself. With a fixed 2048 and a rest value of 1900, the gamepad would report -9 on that axis for ever, a slow drift in every game. So `main()` reads both axes once at power-up, when nobody touches the stick, and uses those readings as the centres. Every reading closer than 100 counts to the centre becomes 0: $100 / 2048$, about the inner 5% of the travel. The cost: an axis whose centre is far from 2048 reaches full travel on one side only (with the centre at 1900, the low side ends at -117).
 
 Reading the buttons. A pressed button connects its pin to GND, so `gpio_get()` returns 0. `buttons_read()` inverts this and packs the four states into the lower 4 bits of one byte, as the report descriptor promises.
 
@@ -876,17 +887,23 @@ Once the firmware is flashed, verify that the gamepad works on your operating sy
 
 1. Open **System Information** (Apple menu > About This Mac > System Report) and check the USB section. "Pico Gamepad" should appear with the correct vendor and product IDs.
 
-2. Games and applications that support game controllers (Steam, for example) should detect the gamepad automatically.
+2. Steam and games built on SDL read the gamepad. Apple's own Game Controller framework accepts only controllers it knows, so some Mac games will not see it.
 
 3. For the CDC serial output, the device appears as `/dev/cu.usbmodemXXXX`. Open it with:
    ```bash
    screen /dev/cu.usbmodem* 115200
    ```
 
-4. For detailed USB analysis, download Apple's USB Prober from the developer tools, or use `system_profiler SPUSBDataType` in Terminal to inspect the descriptor hierarchy.
+4. For detailed USB analysis, run `system_profiler SPUSBDataType` in Terminal to see the device, its IDs and its serial number.
 
 </TabItem>
 </Tabs>
+
+### Check it
+
+- Released stick: the CDC line shows `X:   0 Y:   0`, and `jstest` shows 0 on both axes. Full travel shows about 127 on the CDC line; `jstest` shows about 32767, because Linux scales every axis to that range.
+- Push the stick half-way: about 63 on the CDC line. Plug the Pico in while you hold the stick to one side, and that position becomes the centre: this is the limit of a centre measured at power-up.
+- The serial number (`lsusb -v` on Linux, `system_profiler SPUSBDataType` on macOS) has 16 hex characters and is different on two Picos.
 
 ### Troubleshooting
 

@@ -42,7 +42,7 @@ A potentiometer (a knob that gives a voltage between 0 V and 3.3 V) on an ADC in
 | Temperature Sensor | ADC channel 4 (on-chip) |
 | PWM Output | GP15 (Slice 7B) |
 | PWM Frequency | 1 kHz |
-| Serial Output | USB CDC at 115200 baud |
+| Serial Output | USB CDC (any baud setting works; it is ignored) |
 | Supply Voltage | 3.3V (from Pico onboard regulator) |
 
 ### Bill of Materials
@@ -60,7 +60,7 @@ A potentiometer (a knob that gives a voltage between 0 V and 3.3 V) on an ADC in
 <InArticleAd />
 
 
-On many microcontrollers each peripheral has fixed pins: the serial port is on these two and nowhere else, and two parts of a circuit that need the same pin force a new board. The RP2040 avoids most of these conflicts. Behind every GPIO (general purpose input/output) pin is a selector switch, a multiplexer, with one position for each peripheral that can use the pin. Only one position is active at a time; you set it with `gpio_set_function()`.
+On many microcontrollers each peripheral has fixed pins, and two parts of a circuit that need the same pin force a new board. The RP2040 avoids most of these conflicts. Behind every GPIO (general purpose input/output) pin is a selector switch, a multiplexer, with one position for each peripheral that can use the pin. Only one position is active at a time; you set it with `gpio_set_function()`.
 
 The positions are:
 
@@ -74,7 +74,7 @@ The positions are:
 | GPIO_FUNC_PIO | PIO (Programmable I/O) | Custom protocols, WS2812 LEDs |
 | GPIO_FUNC_USB | USB | VBUS detect, VBUS enable, overcurrent detect (D+/D- are dedicated pins, not GPIOs) |
 
-The choice is wide but not free. Each signal of a peripheral can appear on a few pins only, listed in the RP2040 datasheet (Section 2.19.2). For example, the data output of SPI0 (MOSI) can be on GP3, GP7 or GP19, but not on GP0. The SDK does not warn you about a pin that cannot carry the signal; the peripheral simply stays silent.
+Each signal of a peripheral can appear on a few pins only, listed in the RP2040 datasheet (Section 2.19.2). For example, the data output of SPI0 (MOSI) can be on GP3, GP7 or GP19, but not on GP0. The SDK does not warn you about a pin that cannot carry the signal; the peripheral simply stays silent.
 
 ```c
 #include "pico/stdlib.h"
@@ -96,7 +96,7 @@ With the selector on SIO (the default), your program drives the pin with `gpio_p
 
 ### Pull-Up and Pull-Down Resistors
 
-An input pin with nothing connected reads 0 or 1 at random, and a button to GND leaves it so whenever it is not pressed. A pull-up resistor (about 50K to 80K ohms, inside the chip) holds the pin at 1 until the button pulls it to 0, as a spring holds a door shut until someone pushes it. A pull-down holds it at 0.
+An input pin with nothing connected reads 0 or 1 at random, and a button to GND leaves it so whenever it is not pressed. A pull-up resistor (about 50K to 80K ohms, inside the chip) holds the pin at 1 until the button pulls it to 0, as a spring holds a door shut until someone pushes it. A pull-down holds it at 0. On early Pico 2 boards (RP2350 stepping A2, erratum E9) the internal pull-down can leave an input stuck near 2 V: use the pull-up, or an external pull-down of 8.2K or less.
 
 ```c
 /* Enable internal pull-up on GP14 (useful for a button to GND) */
@@ -137,7 +137,7 @@ The counter of a slice counts clock ticks from 0 up to a value you choose, **wra
 - Frequency: $f_{\text{PWM}} = \dfrac{f_{\text{sys}}}{\text{wrap} + 1}$, where $f_{\text{sys}}$ is the system clock in Hz. The 1 is added because the counter also passes through 0.
 - Duty cycle: $D = \dfrac{\text{level}}{\text{wrap} + 1}$, a fraction between 0 and 1.
 
-The system clock of the Pico is 125 MHz. A wrap of 12499 gives 125,000,000 / 12,500 = 10 kHz. The largest value a 16-bit counter can hold is 65535, so the slowest PWM this formula can give is 125,000,000 / 65,536, about 1907 Hz.
+The system clock of the Pico is 125 MHz (150 MHz on the Pico 2, where every frequency below comes out 1.2 times higher; use `clock_get_hz(clk_sys)` when it must be exact). A wrap of 12499 gives 125,000,000 / 12,500 = 10 kHz. The largest value a 16-bit counter can hold is 65535, so the slowest PWM this formula can give is 125,000,000 / 65,536, about 1907 Hz.
 
 ### Clock Divider
 
@@ -152,6 +152,8 @@ For example, a servo needs 50 Hz (a 20 ms period). With the largest wrap, 65535:
 ```
 divider = 125000000 / (50 * 65536) = ~38.15
 ```
+
+`pwm_set_clkdiv()` keeps only whole sixteenths, so 38.15 becomes 38.125: 50.03 Hz, close enough for a servo.
 
 ## PWM Configuration
 
@@ -195,7 +197,7 @@ To change the duty cycle at runtime, call `pwm_set_chan_level()` with a new valu
 | 50 Hz (servo) | 38.15 | 65535 | 65536 steps |
 | 100 kHz | 1.0 | 1249 | 1250 steps |
 
-The last column is the price of a high frequency: the level is a whole number from 0 to wrap + 1, so a short period allows fewer duty cycles. At 100 kHz there are 1250 steps of brightness; at 1 kHz, 62500, far more than an LED needs.
+The last column is the price of a high frequency: the level is a whole number from 0 to wrap + 1, so 100 kHz allows 1250 steps of brightness and 1 kHz allows 62500, far more than an LED needs.
 
 ## ADC Architecture
 
@@ -225,7 +227,7 @@ A step of 0.8 mV is the resolution, the smallest change the number can show, not
 - The reference is the 3.3 V supply, which comes from a switching regulator and carries its noise.
 - The converter adds noise and small errors of its own. The RP2040 datasheet gives about 8.7 effective bits, not 12.
 
-So a steady voltage gives readings that move by several counts, and a single reading can be trusted to about 8 mV. Averaging recovers some of the resolution: the average of 16 readings has a quarter of the random noise, which is 2 more effective bits.
+So a steady voltage gives readings that move by several counts, and a single reading can be trusted to about 8 mV. The RP2040 also jumps by several counts near the codes 512, 1536, 2560 and 3584 (erratum RP2040-E11). Averaging recovers some of the resolution: the average of 16 readings has a quarter of the random noise, which is 2 more effective bits.
 
 ### Round-Robin Mode
 
@@ -271,6 +273,8 @@ V = raw_adc * (3.3 / 4096)
 For example, a reading of 876 is 876 × 3.3 / 4096 = 0.7058 V, which gives 27 - (0.7058 - 0.706) / 0.001721 = 27.1 degrees C.
 
 The sensor is not calibrated: expect an error of about plus or minus 2 degrees C. It measures the chip, which is warmer than the air around the board.
+
+The formula also trusts the 3.3 V reference, and one count is about half a degree: if the 3V3 pin is really 3.25 V, a chip at 27 degrees C reads 890 and prints 20.6. Measure 3V3 and use that value in place of 3.3 when the temperature matters. The potentiometer is fed from the same 3.3 V, so its reading and the LED brightness do not move with the supply.
 
 ```c
 /* Read the on-chip temperature */
@@ -434,7 +438,7 @@ pico_enable_stdio_uart(led_brightness 0)
 pico_add_extra_outputs(led_brightness)
 ```
 
-Compared with the USB text injector, two things change: the libraries are `hardware_adc` and `hardware_pwm` in place of TinyUSB, and `pico_enable_stdio_usb()` sends `printf()` output to the computer through USB CDC, a serial port carried over the USB cable.
+Compared with the USB text injector, the libraries are `hardware_adc` and `hardware_pwm` in place of TinyUSB, and `pico_enable_stdio_usb()` sends `printf()` output to the computer through USB CDC, a serial port carried over the USB cable.
 
 ## Building and Flashing
 
@@ -475,6 +479,15 @@ Compared with the USB text injector, two things change: the libraries are `hardw
 
 6. Turn the knob. The LED brightness should change smoothly, and the serial output should show the ADC reading, voltage, duty cycle and temperature as they change.
 </Steps>
+
+### Check it
+
+With a multimeter:
+
+1. At the two ends of the knob the ADC should come within a few counts of 0 and 4095; a large gap is a bad contact.
+2. Set the knob near the middle and measure GP26 to GND. The printed voltage should agree within about 10 mV once the measured 3V3 value is in the code; noise of a few counts is normal (averaging is exercise 3).
+3. Measure GP15 to GND on the DC range. The meter averages the PWM, so it reads about the duty cycle times 3.3 V: about 1.65 V at 50 percent, a little less under the LED load.
+4. The temperature is a few degrees above the room and rises under a finger. Many degrees off usually means the wrong reference value.
 
 ## Exercises
 

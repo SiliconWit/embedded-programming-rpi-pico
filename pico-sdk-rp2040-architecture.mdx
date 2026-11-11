@@ -37,7 +37,7 @@ A Raspberry Pi Pico that a computer sees as a USB keyboard: a HID (human interfa
 
 | Parameter | Value |
 |-----------|-------|
-| MCU | RP2040 (dual Cortex-M0+ at 133 MHz) |
+| MCU | RP2040 (dual Cortex-M0+, 125 MHz as the SDK sets it) |
 | USB Mode | HID Keyboard (TinyUSB) |
 | Input | None (self-contained) |
 | Output | USB keystrokes sent to host PC |
@@ -57,7 +57,7 @@ A Raspberry Pi Pico that a computer sees as a USB keyboard: a HID (human interfa
 <InArticleAd />
 
 
-You install three things: the compiler that produces code for ARM chips (`arm-none-eabi-gcc`), CMake (the tool that plans the build), and the SDK itself. The variable `PICO_SDK_PATH` tells every project where the SDK is.
+You install three things: the compiler that produces code for ARM chips (`arm-none-eabi-gcc`), CMake (the tool that plans the build), and the SDK itself. The variable `PICO_SDK_PATH` tells every project where the SDK is. SDK 2.x needs CMake 3.17 or later (Ubuntu 20.04 has 3.16, and the build stops at the `picotool` step) and, at the first build, internet to download and compile its `picotool` helper. On Windows, the Raspberry Pi Pico extension for VS Code installs all of this.
 
 <Tabs>
 <TabItem label="Linux">
@@ -110,7 +110,7 @@ cmake --version
 <TabItem label="Windows">
 Download and install the following:
 
-1. [ARM GCC Toolchain](https://developer.arm.com/downloads/-/gnu-rm) (add to PATH during install)
+1. [Arm GNU Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads), the `arm-none-eabi` version (add to PATH during install)
 2. [CMake](https://cmake.org/download/) (add to PATH during install)
 3. [Git for Windows](https://git-scm.com/download/win)
 4. [Build Tools for Visual Studio](https://visualstudio.microsoft.com/downloads/) (select "C++ build tools")
@@ -164,11 +164,15 @@ The RP2040 is the microcontroller on the Pico. Its parts answer three questions 
 
 ### Dual Cortex-M0+ Cores
 
-A core is a processor: the part that runs your instructions. The RP2040 has two ARM Cortex-M0+ cores at up to 133 MHz each, so two pieces of code can run at the same moment. Your program starts on core 0; core 1 sleeps until your code calls the SDK function `multicore_launch_core1()`.
+A core is a processor: the part that runs your instructions. The RP2040 has two ARM Cortex-M0+ cores, so two pieces of code can run at the same moment. The SDK runs them at 125 MHz; the chip was first rated for 133 MHz, and the current datasheet allows 200 MHz. Your program starts on core 0; core 1 sleeps until your code calls the SDK function `multicore_launch_core1()`.
 
 Both cores see the same memory and peripherals (the built-in hardware blocks such as USB, timers and the ADC). Each has its own stack, the memory where a running function keeps its local data.
 
 The Cortex-M0+ has no floating-point unit, so `float` arithmetic runs as software routines, much slower than integer arithmetic.
+
+:::note[Pico 2 (RP2350)]
+The Pico 2's RP2350 has two Cortex-M33 cores with a floating-point unit (or two RISC-V cores), 150 MHz and 520 KB of SRAM; its ROM sets up the flash itself, so there is no second-stage boot, and its BOOTSEL drive is `RP2350`. This lesson's code builds for it with `cmake -DPICO_BOARD=pico2 ..`; a `.uf2` built for one chip does not run on the other.
+:::
 
 ### Memory: 264 KB SRAM in 6 Banks
 
@@ -260,10 +264,10 @@ pico_add_extra_outputs(usb_text_injector)
 
 Key points about this file:
 
-- `pico_sdk_init()` must be called after `project()` and before `add_executable()`.
-- `add_executable()` lists every source file of the program. A `.c` file that is in the folder but not in this list is not compiled.
-- `target_link_libraries()` names the SDK libraries the program uses. `tinyusb_device` and `tinyusb_board` are TinyUSB built for the RP2040.
-- The compiler produces an `.elf` file. `pico_add_extra_outputs()` also produces the `.uf2` file that you copy to the Pico.
+- `pico_sdk_init()` comes after `project()` and before `add_executable()`.
+- `add_executable()` lists every source file. A `.c` file in the folder but not in this list is not compiled.
+- `target_link_libraries()` names the SDK libraries used; `tinyusb_device` and `tinyusb_board` are TinyUSB for this chip.
+- The compiler produces an `.elf` file; `pico_add_extra_outputs()` also produces the `.uf2` file you copy to the Pico.
 
 ## UF2 Flashing
 
@@ -319,7 +323,9 @@ This header tells TinyUSB which device classes to build: only HID is on (1); ser
 #define CFG_TUSB_MCU          OPT_MCU_RP2040
 #define CFG_TUSB_OS           OPT_OS_PICO
 
-/* USB device configuration */
+/* USB device configuration: port 0 is a device, not a host.
+   Without this line, tusb_init() does not build with SDK 2.x. */
+#define CFG_TUSB_RHPORT0_MODE OPT_MODE_DEVICE
 #define CFG_TUD_ENABLED       1
 #define CFG_TUD_HID           1
 #define CFG_TUD_CDC           0
@@ -336,6 +342,8 @@ This header tells TinyUSB which device classes to build: only HID is on (1); ser
 ### usb_descriptors.c
 
 This file holds the descriptors. The device descriptor gives the identity: a vendor number and a product number (VID and PID) and the name strings. The HID report descriptor gives the format of the messages (reports) the device will send. Here it is a standard keyboard: one byte for the modifier keys such as Shift, and room for six keys pressed at once. TinyUSB calls each `..._cb` function when the computer asks for that descriptor.
+
+VID 0xCafe is TinyUSB's test number: use it on the bench only. A product needs its own pair, from the USB-IF or as a free product number under Raspberry Pi's VID 0x2E8A.
 
 ```c
 #include "tusb.h"
@@ -430,7 +438,7 @@ const uint16_t *tud_descriptor_string_cb(uint8_t index, uint16_t langid)
 <InArticleAd />
 
 
-A USB keyboard does not send letters. It sends reports of which keys are down now, each key named by a number, its keycode. To type one character the firmware sends a report with that keycode (key down), then an empty report (key up). It waits for enumeration and one more second for the computer to load its driver, then types the message.
+A USB keyboard does not send letters. It sends reports of which keys are down now, each key named by a number, its keycode. A keycode names a key position, not a letter: the computer applies its own keyboard layout. `char_to_keycode()` below assumes the US layout; on a German layout "y" arrives as "z". To type one character the firmware sends a report with that keycode (key down), then an empty report (key up). It waits for enumeration and one more second for the computer to load its driver, then types the message.
 
 ```c
 #include <stdlib.h>
@@ -574,7 +582,7 @@ int main(void)
 4. After one second, `type_string()` takes each character of the message. `char_to_keycode()` finds its keycode (and Shift if needed), and `send_key()` sends the key-down report and then the key-up report.
 5. After the message, the firmware keeps calling `tud_task()`, so the computer does not report the keyboard as removed.
 
-One character takes 15 ms down, 15 ms up and a 50 ms pause: 80 ms, or 12.5 characters per second. The waits use `usb_delay_ms()`, which keeps calling `tud_task()`. With a plain `sleep_ms()` TinyUSB would not run between reports and would refuse the next report as busy, so the key-up report would never be sent. With much shorter waits, some operating systems lose keys.
+One character takes 15 ms down, 15 ms up and a 50 ms pause: 80 ms, or 12.5 characters per second. The waits use `usb_delay_ms()`, which keeps calling `tud_task()`; with a plain `sleep_ms()` TinyUSB would refuse the next report as busy, and the key-up report would be lost. With much shorter waits, some operating systems lose keys.
 
 ## Building and Flashing
 
@@ -593,7 +601,7 @@ One character takes 15 ms down, 15 ms up and a 50 ms pause: 80 ms, or 12.5 chara
    ```bash
    make -j$(nproc)
    ```
-   This produces `usb_text_injector.uf2` in the build directory. The output also shows flash and RAM usage.
+   This produces `usb_text_injector.uf2` in the build directory. The output also shows flash and RAM usage. On Windows, in the Developer Command Prompt, use `cmake -G "NMake Makefiles" ..` in step 1 and `nmake` here.
 
 3. Put the Pico into BOOTSEL mode: unplug it, hold the BOOTSEL button, plug it back in, then release the button.
 
@@ -616,6 +624,12 @@ One character takes 15 ms down, 15 ms up and a 50 ms pause: 80 ms, or 12.5 chara
 Open a text editor and click into it before plugging the Pico in. The device will start typing into whatever window has focus. If that happens to be a terminal, it could execute unintended commands.
 :::
 
+### Check it
+
+1. The descriptors were accepted: `lsusb` (Linux) lists `cafe:4001` with your names; Windows Device Manager shows a new "HID Keyboard Device". Nothing listed usually means a charge-only cable.
+2. The timing matches: 30 characters (the line break counts) x 80 ms = 2.4 s, starting about one second after the device appears.
+3. Every character is right. `Raspberrz` means a German layout, `Rqspberry` a French one: the key positions were correct. A missing character is one `char_to_keycode()` does not know (keycode 0 is skipped).
+
 ## Exercises
 
 <InArticleAd />
@@ -631,7 +645,7 @@ Open a text editor and click into it before plugging the Pico in. The device wil
 <InArticleAd />
 
 
-The RP2040 has two cores that share 264 KB of SRAM in six banks, joined by a bus fabric that lets them work at the same time. It starts from a ROM that no program can change, which is why a Pico can always be loaded again through BOOTSEL. CMake plans the build from `CMakeLists.txt`, and the result is a UF2 file that you copy to the Pico. A USB device tells the computer what it is with descriptors, and a keyboard types by sending key-down and key-up reports. Every project in this course uses the same SDK setup, CMake file and UF2 loading.
+The RP2040 has two cores that share 264 KB of SRAM in six banks, joined by a bus fabric that lets them work at the same time. It starts from a ROM that no program can change, which is why a Pico can always be loaded again through BOOTSEL. CMake plans the build from `CMakeLists.txt`, and the result is a UF2 file that you copy to the Pico. A USB device tells the computer what it is with descriptors, and a keyboard types by sending key-down and key-up reports. Every later project uses the same setup.
 
 <EmbeddedProgrammingRpiPicoComments />
 

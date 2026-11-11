@@ -89,7 +89,7 @@ A copying job is described by four things: where from, where to, how many, and h
 | TRANS_COUNT | Number of transfers to perform before completion. |
 | CTRL / CTRL_TRIG | Control register: data size, increment settings, DREQ source, chain target, IRQ enable. Writing CTRL_TRIG also starts the transfer. |
 
-The control register holds several settings, called fields. You will not write these bits by hand: each SDK call in the code below sets one field. The fields this lesson uses:
+The control register holds several settings, called fields. You will not write these bits by hand: each SDK call in the code below sets one field. The fields this lesson uses (bit positions of the RP2040; the RP2350 of the Pico 2 moves several of them, and the same SDK calls still work):
 
 | Field | Bits | Description |
 |-------|------|-------------|
@@ -311,7 +311,7 @@ The samples must go somewhere that keeps them without power: the W25Q32, a 4 MB 
 Flash memory is not written like RAM, and two rules shape the recorder:
 
 - You can write only to erased memory. An erased byte is 0xFF, and a write can only change bits from 1 to 0.
-- Erasing works on a whole 4 KB sector at a time and is slow (about 45 ms). Writing works on a page of at most 256 bytes (about 0.7 ms).
+- Erasing works on a whole 4 KB sector at a time and is slow (about 45 ms, at worst 400 ms). Writing works on a page of at most 256 bytes (about 0.7 ms, at worst 3 ms).
 
 So the recorder erases each sector before it writes into it, and writes in pages of 256 bytes.
 
@@ -500,6 +500,8 @@ volatile bool recording = false;
 uint32_t flash_write_addr = 0;
 uint32_t flash_read_addr = 0;
 uint32_t recorded_length = 0;       // Total bytes recorded
+volatile uint32_t overruns = 0;     // Buffers lost: the CPU was too slow
+volatile bool flash_failed = false; // The flash chip stopped answering
 
 // -------------------------------------------------------
 // SPI Flash Driver
@@ -526,11 +528,18 @@ void flash_init(void) {
 void flash_wait_done(void) {
     uint8_t cmd = CMD_READ_STATUS;
     uint8_t status;
+    // A missing chip can read "busy" for ever; the slowest normal job,
+    // a sector erase, takes at most 400 ms (W25Q32JV datasheet)
+    absolute_time_t limit = make_timeout_time_ms(1000);
     do {
         cs_select();
         spi_write_blocking(FLASH_SPI, &cmd, 1);
         spi_read_blocking(FLASH_SPI, 0, &status, 1);
         cs_deselect();
+        if (time_reached(limit)) {
+            flash_failed = true;
+            return;
+        }
     } while (status & 0x01);
 }
 
@@ -624,11 +633,13 @@ void dma_irq_handler(void) {
     if (dma_hw->ints0 & (1u << dma_chan_a)) {
         dma_hw->ints0 = 1u << dma_chan_a;   // Clear interrupt flag
         dma_channel_set_write_addr(dma_chan_a, buf_a, false);  // Rewind for next turn
+        if (buffer_ready >= 0) overruns++;   // The last full buffer was never saved
         buffer_ready = 0;                    // Buffer A is full
     }
     if (dma_hw->ints0 & (1u << dma_chan_b)) {
         dma_hw->ints0 = 1u << dma_chan_b;   // Clear interrupt flag
         dma_channel_set_write_addr(dma_chan_b, buf_b, false);  // Rewind for next turn
+        if (buffer_ready >= 0) overruns++;   // The last full buffer was never saved
         buffer_ready = 1;                    // Buffer B is full
     }
 }
@@ -707,6 +718,7 @@ void start_recording(void) {
     flash_write_addr = 0;
     recorded_length = 0;
     buffer_ready = -1;
+    overruns = 0;
 
     gpio_put(LED_PIN, 1);   // LED on = recording
 
@@ -736,7 +748,8 @@ void stop_recording(void) {
     buffer_ready = -1;
     gpio_put(LED_PIN, 0);   // LED off
 
-    printf("Recording stopped. %u bytes stored.\n", (unsigned)recorded_length);
+    printf("Recording stopped. %u bytes stored, %u buffers lost.\n",
+           (unsigned)recorded_length, (unsigned)overruns);
 }
 
 // -------------------------------------------------------
@@ -768,6 +781,7 @@ void play_recording(void) {
 
     uint8_t page_buf[FLASH_PAGE_SIZE];
     uint32_t addr = 0;
+    absolute_time_t next = get_absolute_time();
 
     while (addr < recorded_length) {
         size_t chunk = recorded_length - addr;
@@ -781,8 +795,10 @@ void play_recording(void) {
             sample &= 0x0FFF;  // Mask to 12 bits
             pwm_set_chan_level(slice, channel, sample);
 
-            // Wait for one sample period (125 us at 8 kHz)
-            sleep_us(125);
+            // Wait until the next sample is due: 125 us after the last one
+            // was due, so the flash reads do not slow the playback down
+            next = delayed_by_us(next, 125);
+            sleep_until(next);
         }
 
         addr += chunk;
@@ -844,12 +860,12 @@ int main(void) {
     // Verify flash chip
     uint32_t jedec_id = flash_read_jedec_id();
     printf("Flash JEDEC ID: 0x%06X\n", (unsigned)jedec_id);
-    if ((jedec_id & 0xFF0000) == 0) {
+    if (jedec_id == 0x000000 || jedec_id == 0xFFFFFF) {  // A W25Q32 gives 0xEF4016
         printf("WARNING: Flash not detected. Check wiring.\n");
     }
 
     printf("Press button to start/stop recording.\n");
-    printf("Press and hold for 2s to play back.\n");
+    printf("Press and hold for 1.5 s to play back.\n");
 
     uint32_t press_start = 0;
     bool held = false;
@@ -905,6 +921,11 @@ int main(void) {
 
             // Write the completed buffer to flash
             flash_write_buffer(data, BUF_BYTES);
+            if (flash_failed) {
+                printf("Flash not responding. Check wiring.\n");
+                flash_failed = false;
+                stop_recording();
+            }
         }
 
         tight_loop_contents();
@@ -1036,10 +1057,16 @@ This is what happens during one recording, in order:
 10. You press the button again. `stop_recording()` stops the ADC, stops both DMA channels, and stores the total number of bytes.
 </Steps>
 
-The one rule the design must keep: the CPU must finish with one buffer before the other is full. A buffer fills in 128 ms; the page writes take about 6 ms, plus a sector erase of about 45 ms for every second buffer, so the longest typical job is about 51 ms, leaving about 77 ms. These are typical values. The datasheet maximum for a sector erase is several times longer, so a recorder that must never lose a buffer erases its sectors before the recording starts.
+The one rule the design must keep: the CPU must finish with one buffer before the other is full. A buffer fills in 128 ms; the page writes take about 6 ms, plus a sector erase of about 45 ms for every second buffer, so the longest typical job is about 51 ms, leaving about 77 ms. These are typical values. The datasheet maximum for a sector erase is 400 ms, longer than a whole buffer, so a recorder that must never lose a buffer erases its sectors before the recording starts. The firmware does not hide a late CPU: the interrupt handler counts a buffer as lost when it finds the previous full buffer still unsaved, and `flash_wait_done()` gives up after 1 s, so a missing or loose flash chip stops the recording with a message instead of freezing the Pico.
+
+### Check it
+
+1. At start the serial monitor shows `Flash JEDEC ID: 0xEF4016` for a W25Q32. 0x000000 or 0xFFFFFF means no answer from the chip: check the four SPI wires.
+2. Record for 10 s by a clock. Only full buffers are saved (the part-filled one is dropped at stop), so expect 78 buffers: `159744 bytes stored, 0 buffers lost`. Any lost buffers mean the flash was too slow for this rate.
+3. Play it back and time it: it must also take about 10 s. Whistle a steady note while recording, then compare the note of the playback with a phone tuner; a lower note means the playback runs slow.
 
 :::tip[Instrument it]
-This is exactly the machinery a real vibration monitor needs. Bearing and gear faults live in the kilohertz range, and catching them means sampling an accelerometer fast and continuously without dropping a window, which is what DMA ping-pong buffering gives you: one buffer fills from the ADC while the other is processed or flushed to flash. Stream an ADXL1002 or a digital accelerometer through this pipeline, run an FFT, and a [Pico](/education/sensor-actuator-interfacing-stm32/) becomes a condition monitor that [reports the spectrum](https://siliconwit.io) the moment a fault tone rises.
+This is exactly the machinery a real vibration monitor needs. Bearing and gear faults live in the kilohertz range, and catching them means sampling an accelerometer fast and continuously without dropping a window, which is what DMA ping-pong buffering gives you: one buffer fills from the ADC while the other is processed or flushed to flash. Stream an ADXL1002 or a digital accelerometer through this pipeline, run an FFT, and a Pico becomes a condition monitor that [reports the spectrum](https://siliconwit.io) the moment a fault tone rises.
 :::
 
 ## Experiments
